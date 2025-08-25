@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -43,6 +44,17 @@
                 end: ''
             });
 
+            // -------------------------------------------------------------------------
+            // Supabase initialization
+            //
+            // This admin panel now uses Supabase to persist campaigns and posts.  The
+            // URL and anonymous key point to your Supabase project.  If they need
+            // to change, update them here.  The supabase-js library is loaded
+            // globally at the top of this document.
+            const SUPABASE_URL = 'https://zfzydjiqxgrnxnvimnqi.supabase.co';
+            const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpmenlkamlxeGdybnhudmltbnFpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTU2MzYwMjksImV4cCI6MjA3MTIxMjAyOX0.M8lGPIKIAjqQ09ujp-uaXn-3dZNYx5pYSAk28wafP8A';
+            const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
             // Admin credentials (in a real app, these would be securely stored)
             const ADMIN_CREDENTIALS = {
                 username: "wagadugu",
@@ -58,76 +70,97 @@
                 }
             }, []);
 
-            // Load admin data
-            const loadAdminData = () => {
-                // In a real app, this would fetch from an API
-                // For demo purposes, we'll use mock data
-                
-                // Load campaigns from localStorage or use default
-                const savedCampaigns = JSON.parse(localStorage.getItem('campaigns')) || [
-                    {
-                        id: 'text-campaign',
-                        title: 'Community Wall',
-                        description: 'Share your thoughts and experiences',
-                        type: 'text',
-                        is_active: true,
-                        created_at: new Date().toISOString()
-                    },
-                    {
-                        id: 'photo-campaign',
-                        title: 'Photo Gallery',
-                        description: 'Share your favorite moments',
-                        type: 'image',
-                        is_active: true,
-                        created_at: new Date().toISOString()
+            // Load admin data from Supabase
+            const loadAdminData = async () => {
+                try {
+                    // Fetch all campaigns (including inactive) ordered by creation date
+                    const { data: campaignData, error: campaignError } = await supabaseClient
+                        .from('campaigns')
+                        .select('*')
+                        .order('created_at', { ascending: true });
+                    if (campaignError) {
+                        console.error('Error fetching campaigns:', campaignError);
                     }
-                ];
-                setCampaigns(savedCampaigns);
-                
-                // Load confessions from localStorage
-                const savedConfessions = JSON.parse(localStorage.getItem('confessions')) || [];
-                setAllConfessions(savedConfessions);
-                
-                // Generate user statistics
-                const userMap = {};
-                savedConfessions.forEach(conf => {
-                    if (!userMap[conf.owner]) {
-                        userMap[conf.owner] = {
-                            id: conf.owner,
-                            name: conf.name,
-                            postCount: 0,
-                            lastActive: conf.created_at,
-                            campaigns: {}
-                        };
+                    setCampaigns(campaignData || []);
+                    // Fetch all confessions
+                    const { data: confData, error: confError } = await supabaseClient
+                        .from('confessions')
+                        .select('*');
+                    if (confError) {
+                        console.error('Error fetching posts:', confError);
                     }
-                    userMap[conf.owner].postCount++;
-                    userMap[conf.owner].lastActive = conf.created_at > userMap[conf.owner].lastActive ? 
-                        conf.created_at : userMap[conf.owner].lastActive;
-                    
-                    if (!userMap[conf.owner].campaigns[conf.campaign_id]) {
-                        userMap[conf.owner].campaigns[conf.campaign_id] = 0;
-                    }
-                    userMap[conf.owner].campaigns[conf.campaign_id]++;
-                });
-                
-                setUsers(Object.values(userMap));
-                
-                // Calculate system stats
-                const stats = {
-                    totalPosts: savedConfessions.length,
-                    totalUsers: Object.keys(userMap).length,
-                    activeCampaigns: savedCampaigns.filter(c => c.is_active).length,
-                    textPosts: savedConfessions.filter(c => c.type === 'text').length,
-                    imagePosts: savedConfessions.filter(c => c.type === 'image').length,
-                    last24hPosts: savedConfessions.filter(c => {
-                        const postDate = new Date(c.created_at);
-                        const now = new Date();
-                        return (now - postDate) < (24 * 60 * 60 * 1000);
-                    }).length
-                };
-                
-                setSystemStats(stats);
+                    setAllConfessions(confData || []);
+                    const campaignsList = campaignData || [];
+                    const confessionsList = confData || [];
+                    // Build user statistics
+                    const userMap = {};
+                    confessionsList.forEach(conf => {
+                        if (!userMap[conf.owner]) {
+                            userMap[conf.owner] = {
+                                id: conf.owner,
+                                name: conf.name,
+                                postCount: 0,
+                                lastActive: conf.created_at,
+                                campaigns: {}
+                            };
+                        }
+                        userMap[conf.owner].postCount++;
+                        userMap[conf.owner].lastActive = conf.created_at > userMap[conf.owner].lastActive ? 
+                            conf.created_at : userMap[conf.owner].lastActive;
+                        if (!userMap[conf.owner].campaigns[conf.campaign_id]) {
+                            userMap[conf.owner].campaigns[conf.campaign_id] = 0;
+                        }
+                        userMap[conf.owner].campaigns[conf.campaign_id]++;
+                    });
+                    setUsers(Object.values(userMap));
+                    // Calculate system statistics
+                    const stats = {
+                        totalPosts: confessionsList.length,
+                        totalUsers: Object.keys(userMap).length,
+                        activeCampaigns: campaignsList.filter(c => c.is_active).length,
+                        textPosts: confessionsList.filter(c => c.type === 'text').length,
+                        imagePosts: confessionsList.filter(c => c.type === 'image').length,
+                        last24hPosts: confessionsList.filter(c => {
+                            const postDate = new Date(c.created_at);
+                            const now = new Date();
+                            return (now - postDate) < (24 * 60 * 60 * 1000);
+                        }).length
+                    };
+                    setSystemStats(stats);
+                } catch (err) {
+                    console.error('Unexpected error loading admin data:', err);
+                }
             };
+
+            // Listen for changes to campaigns and confessions in real time.  When a
+            // campaign is created, updated or deleted or when a post is added,
+            // updated or removed, refresh the admin data to reflect the latest
+            // state.  This makes the admin panel reactive without requiring
+            // manual refreshes.
+            React.useEffect(() => {
+                const campaignChannel = supabaseClient.channel('public:campaigns')
+                    .on('postgres_changes', {
+                        event: '*',
+                        schema: 'public',
+                        table: 'campaigns'
+                    }, () => {
+                        loadAdminData();
+                    })
+                    .subscribe();
+                const confessionChannel = supabaseClient.channel('public:confessions')
+                    .on('postgres_changes', {
+                        event: '*',
+                        schema: 'public',
+                        table: 'confessions'
+                    }, () => {
+                        loadAdminData();
+                    })
+                    .subscribe();
+                return () => {
+                    supabaseClient.removeChannel(campaignChannel);
+                    supabaseClient.removeChannel(confessionChannel);
+                };
+            }, []);
 
             // Handle login
             const handleLogin = (e) => {
@@ -149,43 +182,75 @@
             };
 
             // Handle campaign status change
-            const toggleCampaignStatus = (campaignId) => {
-                const updatedCampaigns = campaigns.map(campaign => {
-                    if (campaign.id === campaignId) {
-                        return { ...campaign, is_active: !campaign.is_active };
+            const toggleCampaignStatus = async (campaignId) => {
+                const campaign = campaigns.find(c => c.id === campaignId);
+                if (!campaign) return;
+                const newStatus = !campaign.is_active;
+                // Persist change to Supabase
+                try {
+                    const { error } = await supabaseClient
+                        .from('campaigns')
+                        .update({ is_active: newStatus })
+                        .eq('id', campaignId);
+                    if (error) {
+                        console.error('Error updating campaign status:', error);
+                        return;
                     }
-                    return campaign;
-                });
-                
-                setCampaigns(updatedCampaigns);
-                localStorage.setItem('campaigns', JSON.stringify(updatedCampaigns));
+                    setCampaigns(prev => prev.map(c => c.id === campaignId ? { ...c, is_active: newStatus } : c));
+                } catch (err) {
+                    console.error('Unexpected error updating campaign status:', err);
+                }
             };
 
             // Handle campaign deletion
-            const deleteCampaign = (campaignId) => {
-                if (window.confirm('Are you sure you want to delete this campaign? All associated posts will also be deleted.')) {
-                    // Remove campaign
-                    const updatedCampaigns = campaigns.filter(c => c.id !== campaignId);
-                    setCampaigns(updatedCampaigns);
-                    localStorage.setItem('campaigns', JSON.stringify(updatedCampaigns));
-                    
-                    // Remove associated confessions
-                    const updatedConfessions = allConfessions.filter(c => c.campaign_id !== campaignId);
-                    setAllConfessions(updatedConfessions);
-                    localStorage.setItem('confessions', JSON.stringify(updatedConfessions));
-                    
-                    // Reload user data
+            const deleteCampaign = async (campaignId) => {
+                if (!window.confirm('Are you sure you want to delete this campaign? All associated posts will also be deleted.')) return;
+                try {
+                    // Delete all posts associated with this campaign
+                    const { error: postsError } = await supabaseClient
+                        .from('confessions')
+                        .delete()
+                        .eq('campaign_id', campaignId);
+                    if (postsError) {
+                        console.error('Error deleting associated posts:', postsError);
+                        // continue anyway to delete campaign
+                    }
+                    // Delete campaign
+                    const { error: campError } = await supabaseClient
+                        .from('campaigns')
+                        .delete()
+                        .eq('id', campaignId);
+                    if (campError) {
+                        console.error('Error deleting campaign:', campError);
+                        return;
+                    }
+                    // Update local state
+                    setCampaigns(prev => prev.filter(c => c.id !== campaignId));
+                    setAllConfessions(prev => prev.filter(c => c.campaign_id !== campaignId));
+                    // Refresh statistics
                     loadAdminData();
+                } catch (err) {
+                    console.error('Unexpected error deleting campaign:', err);
                 }
             };
 
             // Handle confession deletion
-            const deleteConfession = (confessionId) => {
-                if (window.confirm('Are you sure you want to delete this post?')) {
-                    const updatedConfessions = allConfessions.filter(c => c.id !== confessionId);
-                    setAllConfessions(updatedConfessions);
-                    localStorage.setItem('confessions', JSON.stringify(updatedConfessions));
-                    loadAdminData(); // Refresh stats
+            const deleteConfession = async (confessionId) => {
+                if (!window.confirm('Are you sure you want to delete this post?')) return;
+                try {
+                    const { error } = await supabaseClient
+                        .from('confessions')
+                        .delete()
+                        .eq('id', confessionId);
+                    if (error) {
+                        console.error('Error deleting post:', error);
+                        return;
+                    }
+                    setAllConfessions(prev => prev.filter(c => c.id !== confessionId));
+                    // Refresh statistics
+                    loadAdminData();
+                } catch (err) {
+                    console.error('Unexpected error deleting post:', err);
                 }
             };
 
@@ -195,22 +260,30 @@
             };
 
             // Save campaign edits
-            const saveCampaignEdit = () => {
+            const saveCampaignEdit = async () => {
                 if (!editingCampaign.title.trim()) {
                     alert('Campaign title is required');
                     return;
                 }
-                
-                const updatedCampaigns = campaigns.map(campaign => {
-                    if (campaign.id === editingCampaign.id) {
-                        return editingCampaign;
+                try {
+                    const { error } = await supabaseClient
+                        .from('campaigns')
+                        .update({
+                            title: editingCampaign.title,
+                            description: editingCampaign.description,
+                            type: editingCampaign.type,
+                            is_active: editingCampaign.is_active
+                        })
+                        .eq('id', editingCampaign.id);
+                    if (error) {
+                        console.error('Error saving campaign changes:', error);
+                        return;
                     }
-                    return campaign;
-                });
-                
-                setCampaigns(updatedCampaigns);
-                localStorage.setItem('campaigns', JSON.stringify(updatedCampaigns));
-                setEditingCampaign(null);
+                    setCampaigns(prev => prev.map(c => c.id === editingCampaign.id ? { ...c, ...editingCampaign } : c));
+                    setEditingCampaign(null);
+                } catch (err) {
+                    console.error('Unexpected error saving campaign changes:', err);
+                }
             };
 
             // Handle new campaign creation
@@ -223,29 +296,35 @@
             };
 
             // Create new campaign
-            const createNewCampaign = () => {
+            const createNewCampaign = async () => {
                 if (!newCampaign.title.trim()) {
                     alert('Campaign title is required');
                     return;
                 }
-                
                 const campaign = {
                     ...newCampaign,
                     id: `campaign-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
                     created_at: new Date().toISOString()
                 };
-                
-                const updatedCampaigns = [...campaigns, campaign];
-                setCampaigns(updatedCampaigns);
-                localStorage.setItem('campaigns', JSON.stringify(updatedCampaigns));
-                
-                // Reset form
-                setNewCampaign({
-                    title: '',
-                    description: '',
-                    type: 'text',
-                    is_active: true
-                });
+                try {
+                    const { error } = await supabaseClient
+                        .from('campaigns')
+                        .insert([campaign]);
+                    if (error) {
+                        console.error('Error creating campaign:', error);
+                        return;
+                    }
+                    setCampaigns(prev => [...prev, campaign]);
+                    // Reset form
+                    setNewCampaign({
+                        title: '',
+                        description: '',
+                        type: 'text',
+                        is_active: true
+                    });
+                } catch (err) {
+                    console.error('Unexpected error creating campaign:', err);
+                }
             };
 
             // Filter confessions based on filters
