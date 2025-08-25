@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -18,6 +19,8 @@
         // Main Enhanced Campaign Board Component
         function EnhancedCampaignBoard() {
             // State management
+            // Campaigns are now loaded from Supabase instead of being hard-coded.  An empty array is used as the default state
+            // until the asynchronous fetch completes.  Once campaigns are fetched, the first active campaign will be selected automatically.
             const [campaigns, setCampaigns] = React.useState([]);
             const [activeCampaign, setActiveCampaign] = React.useState(null);
             const [confessions, setConfessions] = React.useState([]);
@@ -48,8 +51,6 @@
             const [timeLapseMode, setTimeLapseMode] = React.useState(false);
             const [timeLapseProgress, setTimeLapseProgress] = React.useState(100);
             const [timeLapsePlaying, setTimeLapsePlaying] = React.useState(false);
-            const [timeLapseFullscreen, setTimeLapseFullscreen] = React.useState(false);
-            const [likedPosts, setLikedPosts] = React.useState({});
             const nameTimeoutRef = React.useRef(null);
             const timeLapseIntervalRef = React.useRef(null);
 
@@ -61,7 +62,14 @@
             const MIN_CONFESSION_HEIGHT = 80;
             const MAX_CONFESSION_HEIGHT = 200;
 
+            // -------------------------------------------------------------------------
             // Supabase initialization
+            //
+            // The board now persists campaigns and posts using Supabase.  The URL and
+            // anonymous key below point at your Supabase project.  If these values
+            // need to change in the future, update them here.  The supabase-js
+            // library is loaded globally at the top of this document.
+            // New Supabase credentials for TalkLoop project
             const SUPABASE_URL = 'https://swurygicmrkbdgqbzhmp.supabase.co';
             const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN3dXJ5Z2ljbXJrYmRncWJ6aG1wIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTYxNTE0NDUsImV4cCI6MjA3MTcyNzQ0NX0.u9IB0nxe2UmR3AOZ5-MY6_A_WJK-YY8Z9mF8EYBH3Gk';
             const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
@@ -84,36 +92,22 @@
                 return [id, nickname];
             }, []);
 
-            // Check if user has posted in active campaign
+            // Check if the current user has already placed a confession in the active campaign.
+            // Instead of a site-wide check, this now validates on a per‑campaign basis.  If the
+            // active campaign is null (e.g. while campaigns are still loading), no one is
+            // considered to have posted.
             const userHasPosted = React.useMemo(() => 
                 activeCampaign ? confessions.some(conf => conf.owner === userId && conf.campaign_id === activeCampaign.id) : false,
                 [confessions, userId, activeCampaign]
             );
 
-            // Load liked posts from localStorage
-            React.useEffect(() => {
-                const savedLikes = localStorage.getItem('campaignLikes');
-                if (savedLikes) {
-                    setLikedPosts(JSON.parse(savedLikes));
-                }
-            }, []);
-
-            // Save liked posts to localStorage
-            React.useEffect(() => {
-                localStorage.setItem('campaignLikes', JSON.stringify(likedPosts));
-            }, [likedPosts]);
-
-            // Find post with most likes
-            const mostLikedPost = React.useMemo(() => {
-                if (confessions.length === 0) return null;
-                
-                return confessions.reduce((max, conf) => {
-                    const likes = conf.likes || 0;
-                    return likes > (max.likes || 0) ? conf : max;
-                }, confessions[0]);
-            }, [confessions]);
-
-            // Fetch campaigns
+            // -------------------------------------------------------------------------
+            // Supabase data loading
+            //
+            // Fetch the list of active campaigns once when the component mounts.  The
+            // campaigns are ordered by their creation date so that older campaigns
+            // appear first in the dropdown.  If no campaigns exist, the list will
+            // remain empty and the UI will instruct the administrator to create one.
             React.useEffect(() => {
                 const fetchCampaigns = async () => {
                     try {
@@ -126,6 +120,7 @@
                             console.error('Error fetching campaigns:', error);
                         } else {
                             setCampaigns(data);
+                            // Automatically select the first campaign if none is currently active
                             if (!activeCampaign && data.length > 0) {
                                 setActiveCampaign(data[0]);
                             }
@@ -137,7 +132,11 @@
                 fetchCampaigns();
             }, []);
 
-            // Fetch confessions and set up real-time subscription
+            // When the active campaign changes, fetch its posts and set up a real‑time
+            // subscription.  The subscription listens for INSERT, UPDATE and DELETE
+            // events on the confessions table for the current campaign only.  On
+            // unmount or when switching campaigns, the channel is removed to avoid
+            // memory leaks.
             React.useEffect(() => {
                 if (!activeCampaign) return;
                 let ignore = false;
@@ -160,7 +159,7 @@
                 };
                 loadConfessions();
 
-                // Subscribe to real-time changes
+                // Subscribe to real‑time changes for this campaign
                 const channel = supabaseClient.channel('public:confessions')
                     .on('postgres_changes', {
                         event: '*',
@@ -171,6 +170,7 @@
                         const { eventType, new: newRow, old: oldRow } = payload;
                         if (eventType === 'INSERT') {
                             setConfessions(prev => {
+                                // avoid duplicates if this post already exists
                                 if (prev.some(c => c.id === newRow.id)) return prev;
                                 return [...prev, newRow];
                             });
@@ -201,47 +201,9 @@
                 nameTimeoutRef.current = setTimeout(() => setShownConfessionId(null), 3000);
             };
 
-            // Handle like/unlike a post
-            const handleLikePost = async (confId) => {
-                const confession = confessions.find(c => c.id === confId);
-                if (!confession) return;
-                
-                const hasLiked = likedPosts[confId];
-                const newLikes = (confession.likes || 0) + (hasLiked ? -1 : 1);
-                
-                // Optimistic UI update
-                setConfessions(prev => prev.map(c => 
-                    c.id === confId ? { ...c, likes: newLikes } : c
-                ));
-                
-                setLikedPosts(prev => ({ ...prev, [confId]: !hasLiked }));
-                
-                // Update in database
-                try {
-                    const { error } = await supabaseClient
-                        .from('confessions')
-                        .update({ likes: newLikes })
-                        .eq('id', confId);
-                    
-                    if (error) {
-                        console.error('Error updating likes:', error);
-                        // Revert on error
-                        setConfessions(prev => prev.map(c => 
-                            c.id === confId ? { ...c, likes: confession.likes || 0 } : c
-                        ));
-                        setLikedPosts(prev => ({ ...prev, [confId]: hasLiked }));
-                    }
-                } catch (err) {
-                    console.error('Unexpected error updating likes:', err);
-                    setConfessions(prev => prev.map(c => 
-                        c.id === confId ? { ...c, likes: confession.likes || 0 } : c
-                    ));
-                    setLikedPosts(prev => ({ ...prev, [confId]: hasLiked }));
-                }
-            };
-
             // Placement Engine
             const PlacementEngine = {
+                // Calculate rotated bounds
                 rotatedBounds: (w, h, rotRad) => {
                     const cos = Math.cos(rotRad);
                     const sin = Math.sin(rotRad);
@@ -250,6 +212,7 @@
                     return { rw, rh };
                 },
 
+                // Check if two rectangles overlap (with buffer for safety)
                 overlaps: (a, b) => {
                     const buffer = 5;
                     return a.x < b.x + b.w + buffer &&
@@ -258,17 +221,20 @@
                            a.y + a.h + buffer > b.y;
                 },
 
+                // Find placement
                 findPlacement: ({ wallWidth, wallHeight, itemW, itemH, rotRad, existing, maxTries = 5000 }) => {
                     const { rw, rh } = PlacementEngine.rotatedBounds(itemW, itemH, rotRad);
                     const w = Math.ceil(rw);
                     const h = Math.ceil(rh);
                     
+                    // Try to find a valid position
                     for (let i = 0; i < maxTries; i++) {
                         const x = Math.floor(Math.random() * Math.max(1, wallWidth - w));
                         const y = Math.floor(Math.random() * Math.max(1, wallHeight - h));
                         
                         const bb = { x, y, w, h };
                         
+                        // Check for collisions with existing items
                         const collides = existing.some(e => {
                             const eBounds = PlacementEngine.rotatedBounds(e.w, e.h, e.rot);  
                             return PlacementEngine.overlaps(bb, { 
@@ -282,7 +248,7 @@
                         if (!collides) return { x, y };
                     }
                     
-                    return null;
+                    return null; // No valid position found
                 }
             };
 
@@ -300,7 +266,10 @@
                 setDirectWritingText('');
             };
 
-            // Place text directly onto the wall
+            // Handle placing direct writing
+            // Place text directly onto the wall.  This function now persists the post
+            // to Supabase before updating the local state.  If an error occurs during
+            // persistence, the user is notified and the post is not added locally.
             const handlePlaceDirectWriting = async () => {
                 if (!activeCampaign) {
                     setUserMessage('Go to Admin to create your first campaign.');
@@ -313,8 +282,10 @@
                 
                 const text = directWritingText.trim();
                 const textLength = text.length;
+                const words = text.split(' ');
                 const lineCount = Math.max(1, Math.ceil(textLength / 15));
 
+                // Calculate dimensions based on text
                 const baseWidth = Math.max(
                     MIN_CONFESSION_WIDTH, 
                     Math.min(MAX_CONFESSION_WIDTH, 70 + textLength * 4)
@@ -330,6 +301,7 @@
                 const rotDeg = Math.round(rotation);
                 const rotRad = (rotDeg * Math.PI) / 180;
 
+                // Adjust position to center the confession
                 const { rw, rh } = PlacementEngine.rotatedBounds(w, h, rotRad);
                 const x = Math.max(0, Math.min(directWritingPosition.x - rw/2, WALL_WIDTH - rw));
                 const y = Math.max(0, Math.min(directWritingPosition.y - rh/2, WALL_HEIGHT - rh));
@@ -349,11 +321,11 @@
                     rot: rotRad,  
                     name: userNickname,
                     created_at: new Date().toISOString(),
-                    type: 'text',
-                    likes: 0
+                    type: 'text'
                 };
 
                 try {
+                    // Persist to Supabase
                     const { error } = await supabaseClient
                         .from('confessions')
                         .insert([confessionData]);
@@ -362,6 +334,10 @@
                         setUserMessage('Failed to submit your post. Please try again.');
                         return;
                     }
+                    // Optimistically update local state.  The real‑time listener
+                    // will also add this record to the list, but we add it here
+                    // immediately for better UX.  Duplicate entries are avoided by
+                    // the listener.
                     setConfessions(prev => [...prev, confessionData]);
                     setIsWritingDirectly(false);
                     setUserMessage("Your post has been added to the campaign!");
@@ -409,10 +385,12 @@
                 const x = (e.clientX - rect.left) / zoom;
                 const y = (e.clientY - rect.top) / zoom;
                 
+                // Standard size for images
                 const w = 200;
                 const h = 200;
                 const rotRad = (rotation * Math.PI) / 180;
                 
+                // Adjust position to center the image
                 const { rw, rh } = PlacementEngine.rotatedBounds(w, h, rotRad);
                 const finalX = Math.max(0, Math.min(x - rw/2, WALL_WIDTH - rw));
                 const finalY = Math.max(0, Math.min(y - rh/2, WALL_HEIGHT - rh));
@@ -428,8 +406,7 @@
                     rot: rotRad,  
                     name: userNickname,
                     created_at: new Date().toISOString(),
-                    type: 'image',
-                    likes: 0
+                    type: 'image'
                 };
 
                 try {
@@ -468,6 +445,7 @@
                 setUserMessage("Finding the perfect spot for your post...");
                 
                 try {
+                    // Calculate size based on text length
                     const textLength = confessionText.trim().length;
                     const words = confessionText.trim().split(' ');
                     const lineCount = Math.max(1, Math.ceil(textLength / 15));
@@ -490,6 +468,7 @@
                     let spot = null;
                     
                     if (placementMode === 'manual' && pendingManualSpot) {
+                        // Try to place at the clicked spot
                         const { rw, rh } = PlacementEngine.rotatedBounds(w, h, rotRad);
                         const bb = { 
                             x: Math.max(0, Math.min(pendingManualSpot.x - rw/2, WALL_WIDTH - rw)), 
@@ -498,6 +477,7 @@
                             h: rh 
                         };
                         
+                        // Check if it overlaps with existing confessions
                         const nearbyItems = confessions.map(conf => {
                             const bounds = PlacementEngine.rotatedBounds(conf.w, conf.h, conf.rot);
                             return { x: conf.x, y: conf.y, w: bounds.rw, h: bounds.rh };
@@ -508,6 +488,7 @@
                         if (!collides) {
                             spot = { x: bb.x, y: bb.y };
                         } else {
+                            // Try to find a nearby spot
                             spot = PlacementEngine.findPlacement({
                                 wallWidth: WALL_WIDTH,
                                 wallHeight: WALL_HEIGHT,
@@ -519,6 +500,7 @@
                             });
                         }
                     } else {
+                        // Auto placement
                         spot = PlacementEngine.findPlacement({
                             wallWidth: WALL_WIDTH,
                             wallHeight: WALL_HEIGHT,
@@ -550,8 +532,7 @@
                         rot: rotRad,  
                         name: userNickname,
                         created_at: new Date().toISOString(),
-                        type: 'text',
-                        likes: 0
+                        type: 'text'
                     };
 
                     try {
@@ -624,6 +605,7 @@
             const handleSaveEdit = async () => {
                 if (!editingPostId) return;
                 const newRot = (editRotation * Math.PI) / 180;
+                // Update local state immediately
                 setConfessions(prev => prev.map(conf => {
                     if (conf.id === editingPostId) {
                         return {
@@ -639,6 +621,7 @@
                 }));
                 setEditingPostId(null);
                 setUserMessage("Your post has been updated.");
+                // Persist changes to Supabase
                 try {
                     const { error } = await supabaseClient
                         .from('confessions')
@@ -672,12 +655,13 @@
                 const cy = userConf.y + rh / 2;
 
                 if (autoZoom) {
+                    // Calculate optimal zoom to show confession clearly
                     const targetZoom = Math.min(
-                        1,
-                        (container.clientWidth - 40) / (rw * 1.5),
+                        1, // Cap at 100%
+                        (container.clientWidth - 40) / (rw * 1.5), // 1.5 times the confession width with padding
                         (container.clientHeight - 40) / (rh * 1.5)
                     );
-                    setZoom(Math.max(0.2, Math.min(2, targetZoom)));
+                    setZoom(Math.max(0.2, Math.min(2, targetZoom))); // Keep between 20% and 200%
                 }
                 
                 const left = Math.max(0, Math.min(
@@ -692,6 +676,7 @@
                 
                 container.scrollTo({ left, top, behavior: "smooth" });
                 
+                // Highlight confession
                 const el = wallInnerRef.current?.querySelector(`[data-conf-id="${userConf.id}"]`);
                 if (el) {
                     el.setAttribute('data-flash', '1');
@@ -705,6 +690,7 @@
 
                 const container = wallScrollRef.current;
 
+                // Calculate bounding box of all confessions
                 let minX = Infinity, minY = Infinity, maxX = 0, maxY = 0;
                 confessions.forEach(conf => {
                     const { rw, rh } = PlacementEngine.rotatedBounds(conf.w, conf.h, conf.rot);
@@ -717,11 +703,13 @@
                 const contentWidth = maxX - minX;
                 const contentHeight = maxY - minY;
 
+                // Calculate zoom to fit content
                 const zoomX = container.clientWidth / contentWidth;
                 const zoomY = container.clientHeight / contentHeight;
-                const targetZoom = Math.min(zoomX, zoomY, 1) * 0.9;
+                const targetZoom = Math.min(zoomX, zoomY, 1) * 0.9; // 90% to add padding
                 setZoom(targetZoom);
 
+                // Center scroll
                 const cx = minX + contentWidth / 2;
                 const cy = minY + contentHeight / 2;
                 const left = Math.max(0, cx - container.clientWidth / (2 * targetZoom));
@@ -799,12 +787,14 @@
             // Time-lapse functionality
             const toggleTimeLapse = () => {
                 if (timeLapsePlaying) {
+                    // Stop time-lapse
                     setTimeLapsePlaying(false);
                     if (timeLapseIntervalRef.current) {
                         clearInterval(timeLapseIntervalRef.current);
                         timeLapseIntervalRef.current = null;
                     }
                 } else {
+                    // Start time-lapse
                     setTimeLapsePlaying(true);
                     setTimeLapseProgress(0);
                     
@@ -820,11 +810,6 @@
                         });
                     }, 50);
                 }
-            };
-
-            // Toggle time-lapse fullscreen
-            const toggleTimeLapseFullscreen = () => {
-                setTimeLapseFullscreen(!timeLapseFullscreen);
             };
 
             // Admin login
@@ -1205,15 +1190,6 @@
                                             </button>  
                                         )}
                                         
-                                        {hasCampaign && activeCampaign.type === 'image' && placementMode === 'manual' && uploadedImage && !userHasPosted && (
-                                            <button  
-                                                onClick={() => setUserMessage('Click on the wall to place your image')}  
-                                                className="w-full py-3 px-4 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition-colors flex items-center justify-center"  
-                                            >  
-                                                Ready to Place Image
-                                            </button>  
-                                        )}
-                                        
                                         <button  
                                             onClick={handleRemoveConfession}  
                                             disabled={!hasCampaign || !userHasPosted}  
@@ -1333,20 +1309,12 @@
                                         <div className="mb-4 bg-gray-100 p-3 rounded-lg">
                                             <div className="flex items-center justify-between mb-2">
                                                 <span className="text-sm font-medium text-gray-700">Time Lapse</span>
-                                                <div className="flex space-x-2">
-                                                    <button 
-                                                        onClick={toggleTimeLapse}
-                                                        className="px-2 py-1 bg-indigo-600 text-white text-sm rounded"
-                                                    >
-                                                        {timeLapsePlaying ? 'Stop' : 'Play'}
-                                                    </button>
-                                                    <button 
-                                                        onClick={toggleTimeLapseFullscreen}
-                                                        className="px-2 py-1 bg-gray-600 text-white text-sm rounded"
-                                                    >
-                                                        <i className="fas fa-expand"></i>
-                                                    </button>
-                                                </div>
+                                                <button 
+                                                    onClick={toggleTimeLapse}
+                                                    className="px-2 py-1 bg-indigo-600 text-white text-sm rounded"
+                                                >
+                                                    {timeLapsePlaying ? 'Stop' : 'Play'}
+                                                </button>
                                             </div>
                                             <input
                                                 type="range"
@@ -1438,46 +1406,21 @@
                                                     <div   
                                                         key={conf.id}   
                                                         data-conf-id={conf.id}  
-                                                        className={`absolute select-none transition-transform duration-200 hover:z-50 hover:scale-105 group ${mostLikedPost && mostLikedPost.id === conf.id ? 'animate-bounce' : ''}`}  
+                                                        className="absolute select-none transition-transform duration-200 hover:z-50 hover:scale-105 group"  
                                                         style={{   
                                                             left: `${conf.x}px`,   
                                                             top: `${conf.y}px`,   
                                                             width: `${conf.w}px`,   
                                                             height: `${conf.h}px`,  
                                                             transform: `rotate(${conf.rot * 180 / Math.PI}deg)`,  
-                                                            transformOrigin: 'center',
-                                                            zIndex: mostLikedPost && mostLikedPost.id === conf.id ? 100 : 1
+                                                            transformOrigin: 'center'
                                                         }}  
                                                         onClick={() => handleConfessionClick(conf.id)}  
                                                     >  
-                                                        {/* Floating info panel */}
-                                                        <div className={`absolute -top-8 left-0 right-0 flex justify-center items-center space-x-2 transition-opacity duration-200 ${  
+                                                        <div className={`absolute -top-8 left-1/2 -translate-x-1/2 text-xs px-2 py-1 rounded bg-gray-900 text-white whitespace-nowrap transition-opacity duration-200 ${  
                                                             shownConfessionId === conf.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'  
-                                                        } z-50 pointer-events-none`}>  
-                                                            <span className="text-xs px-2 py-1 rounded bg-gray-900 text-white whitespace-nowrap">  
-                                                                {conf.name}  
-                                                            </span>
-                                                            {conf.owner === userId && (
-                                                                <button
-                                                                    onClick={(e) => {
-                                                                        e.stopPropagation();
-                                                                        handleEditConfession(conf.id);
-                                                                    }}
-                                                                    className="text-xs bg-indigo-600 text-white px-2 py-1 rounded"
-                                                                >
-                                                                    Edit
-                                                                </button>
-                                                            )}
-                                                            <button
-                                                                onClick={(e) => {
-                                                                    e.stopPropagation();
-                                                                    handleLikePost(conf.id);
-                                                                }}
-                                                                className="text-xs flex items-center bg-pink-600 text-white px-2 py-1 rounded"
-                                                            >
-                                                                <i className={`mr-1 fas ${likedPosts[conf.id] ? 'fa-heart text-red-300' : 'fa-heart'}`}></i>
-                                                                <span>{conf.likes || 0}</span>
-                                                            </button>
+                                                        } z-50`}>  
+                                                            {conf.name}  
                                                         </div>  
                                                         
                                                         {conf.type === 'text' ? (
@@ -1514,6 +1457,18 @@
                                                                 }}
                                                             />
                                                         )}
+
+                                                        {conf.owner === userId && (
+                                                            <button
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    handleEditConfession(conf.id);
+                                                                }}
+                                                                className="absolute -bottom-8 left-1/2 -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity bg-indigo-600 text-white px-2 py-1 rounded text-xs"
+                                                            >
+                                                                Edit
+                                                            </button>
+                                                        )}
                                                     </div>  
                                                 ))}  
                                             </div>  
@@ -1546,125 +1501,6 @@
                             </div>  
                         </div>  
                     </main>
-
-                    {/* Time Lapse Fullscreen Modal */}
-                    {timeLapseFullscreen && (
-                        <div className="fixed inset-0 bg-black bg-opacity-90 flex flex-col items-center justify-center z-50 p-4">
-                            <div className="w-full max-w-6xl bg-gray-800 rounded-lg overflow-hidden">
-                                <div className="flex justify-between items-center p-4 bg-gray-900 text-white">
-                                    <h3 className="text-lg font-semibold">Time Lapse: {campaignTitle}</h3>
-                                    <button 
-                                        onClick={toggleTimeLapseFullscreen}
-                                        className="text-white hover:text-gray-300"
-                                    >
-                                        <i className="fas fa-times"></i>
-                                    </button>
-                                </div>
-                                
-                                <div className="relative bg-gray-700 p-4">
-                                    <div className="bg-gray-600 rounded-lg overflow-hidden">
-                                        <div 
-                                            className="mx-auto overflow-hidden"
-                                            style={{  
-                                                width: '100%',  
-                                                height: '60vh',  
-                                                backgroundSize: '24px 24px',  
-                                                backgroundImage: 'radial-gradient(#4a5568 1px, transparent 1px)',  
-                                                backgroundRepeat: 'repeat',
-                                            }}  
-                                        >  
-                                            <div
-                                                className="relative mx-auto my-6"
-                                                style={{  
-                                                    width: `${WALL_WIDTH}px`,  
-                                                    height: `${WALL_HEIGHT}px`,  
-                                                    transform: `scale(0.7)`,  
-                                                    transformOrigin: 'center center'
-                                                }}  
-                                            >  
-                                                {filteredConfessions.map((conf) => (  
-                                                    <div   
-                                                        key={conf.id}   
-                                                        className="absolute select-none"
-                                                        style={{   
-                                                            left: `${conf.x}px`,   
-                                                            top: `${conf.y}px`,   
-                                                            width: `${conf.w}px`,   
-                                                            height: `${conf.h}px`,  
-                                                            transform: `rotate(${conf.rot * 180 / Math.PI}deg)`,  
-                                                            transformOrigin: 'center'
-                                                        }}  
-                                                    >  
-                                                        {conf.type === 'text' ? (
-                                                            <div
-                                                                className="w-full h-full flex items-center justify-center text-center p-3"
-                                                                style={{
-                                                                    color: conf.color || '#000000',
-                                                                    fontFamily: conf.font_family || 'Arial',
-                                                                    fontSize: `${conf.font_size || 14}px`,
-                                                                    overflow: 'hidden',
-                                                                    wordBreak: 'break-word',
-                                                                    textShadow: `
-                                                                        1px 1px 0 ${conf.boundary_color || '#ffffff'}, 
-                                                                        -1px -1px 0 ${conf.boundary_color || '#ffffff'}, 
-                                                                        1px -1px 0 ${conf.boundary_color || '#ffffff'}, 
-                                                                        -1px 1px 0 ${conf.boundary_color || '#ffffff'},
-                                                                        0px 1px 0 ${conf.boundary_color || '#ffffff'}, 
-                                                                        1px 0px 0 ${conf.boundary_color || '#ffffff'}, 
-                                                                        -1px 0px 0 ${conf.boundary_color || '#ffffff'}, 
-                                                                        0px -1px 0 ${conf.boundary_color || '#ffffff'}
-                                                                    `,
-                                                                    backgroundColor: 'rgba(255, 255, 255, 0.9)',
-                                                                    borderRadius: '4px'
-                                                                }}
-                                                            >
-                                                                {conf.text}
-                                                            </div>
-                                                        ) : (
-                                                            <img 
-                                                                src={conf.image} 
-                                                                alt="User submission"
-                                                                className="w-full h-full object-cover"
-                                                                style={{
-                                                                    border: '2px solid #e5e7eb',
-                                                                    borderRadius: '8px'
-                                                                }}
-                                                            />
-                                                        )}
-                                                    </div>  
-                                                ))}  
-                                            </div>  
-                                        </div>  
-                                    </div>
-                                    
-                                    <div className="mt-4 bg-gray-900 p-3 rounded-lg">
-                                        <div className="flex items-center justify-between mb-2">
-                                            <span className="text-sm font-medium text-white">Time Lapse Progress</span>
-                                            <button 
-                                                onClick={toggleTimeLapse}
-                                                className="px-3 py-1 bg-indigo-600 text-white text-sm rounded"
-                                            >
-                                                {timeLapsePlaying ? 'Pause' : 'Play'}
-                                            </button>
-                                        </div>
-                                        <input
-                                            type="range"
-                                            min="0"
-                                            max="100"
-                                            value={timeLapseProgress}
-                                            onChange={e => setTimeLapseProgress(parseInt(e.target.value))}
-                                            className="w-full"
-                                        />
-                                        <div className="flex justify-between text-xs text-gray-300 mt-1">
-                                            <span>Start</span>
-                                            <span>{timeLapseProgress}% Complete</span>
-                                            <span>Now</span>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    )}
 
                     {/* Edit Modal */}
                     {editingPostId && (
@@ -1803,17 +1639,6 @@
                             cursor: pointer;
                             border: 2px solid white;
                             box-shadow: 0 0 0 1px #e5e7eb, 0 2px 4px rgba(0,0,0,0.1);
-                        }
-                        .animate-bounce {
-                            animation: bounce 2s infinite;
-                        }
-                        @keyframes bounce {
-                            0%, 100% {
-                                transform: translateY(0) rotate(var(--tw-rotate));
-                            }
-                            50% {
-                                transform: translateY(-10px) rotate(var(--tw-rotate));
-                            }
                         }
                     `}</style>
                 </div>
