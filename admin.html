@@ -296,25 +296,25 @@
             };
 
             // Create new campaign
-           // Create new campaign (Supabase + visible error)
+          // Create new campaign (let DB generate the UUID)
 const createNewCampaign = async () => {
   if (!newCampaign.title.trim()) {
     alert('Campaign title is required');
     return;
   }
 
-  const campaign = {
-    id: `campaign-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+  const payload = {
+    // id:  ❌ remove this line — DB will fill UUID
     title: newCampaign.title.trim(),
     description: newCampaign.description?.trim() || '',
-    type: newCampaign.type || 'text',            // 'text' | 'image'
-    is_active: !!newCampaign.is_active,
-    created_at: new Date().toISOString()
+    type: newCampaign.type || 'text',
+    is_active: !!newCampaign.is_active
+    // created_at: ❌ optional; DB has a default
   };
 
-  const { data, error } = await supabaseClient
+  const { data, error } = await supabaseClient   // ← use your client var (supabase / sb / supabaseClient)
     .from('campaigns')
-    .insert([campaign])
+    .insert([payload])
     .select()
     .single();
 
@@ -324,10 +324,8 @@ const createNewCampaign = async () => {
     return;
   }
 
-  // Use the row returned by Supabase (in case DB adds defaults)
+  // Use the row returned by Supabase
   setCampaigns(prev => [...prev, data]);
-
-  // Reset and close the form panel
   setNewCampaign({ title: '', description: '', type: 'text', is_active: true });
   setSelectedCampaign(null);
 };
