@@ -1,4 +1,5 @@
 
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -51,9 +52,21 @@
             // URL and anonymous key point to your Supabase project.  If they need
             // to change, update them here.  The supabase-js library is loaded
             // globally at the top of this document.
-            const SUPABASE_URL = 'https://zfzydjiqxgrnxnvimnqi.supabase.co';
-            const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpmenlkamlxeGdybnhudmltbnFpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTU2MzYwMjksImV4cCI6MjA3MTIxMjAyOX0.M8lGPIKIAjqQ09ujp-uaXn-3dZNYx5pYSAk28wafP8A';
+            // New Supabase credentials for TalkLoop project
+            const SUPABASE_URL = 'https://swurygicmrkbdgqbzhmp.supabase.co';
+            const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN3dXJ5Z2ljbXJrYmRncWJ6aG1wIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTYxNTE0NDUsImV4cCI6MjA3MTcyNzQ0NX0.u9IB0nxe2UmR3AOZ5-MY6_A_WJK-YY8Z9mF8EYBH3Gk';
             const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+            // -------------------------------------------------------------------------
+            // Helper to normalize campaign type.  Supabase enforces a check constraint
+            // that campaign.type must be either 'text' or 'image'.  Use this helper
+            // whenever saving or creating campaigns to coerce arbitrary values into
+            // one of the allowed values.  Anything other than 'image' will default
+            // to 'text'.
+            const normalizeType = (t) => {
+                const v = (t || '').toString().toLowerCase();
+                return v === 'image' ? 'image' : 'text';
+            };
 
             // Admin credentials (in a real app, these would be securely stored)
             const ADMIN_CREDENTIALS = {
@@ -266,23 +279,24 @@
                     return;
                 }
                 try {
+                    const payload = {
+                        title: editingCampaign.title,
+                        description: editingCampaign.description,
+                        type: normalizeType(editingCampaign.type),
+                        is_active: editingCampaign.is_active
+                    };
                     const { error } = await supabaseClient
                         .from('campaigns')
-                        .update({
-                            title: editingCampaign.title,
-                            description: editingCampaign.description,
-                            type: editingCampaign.type,
-                            is_active: editingCampaign.is_active
-                        })
+                        .update(payload)
                         .eq('id', editingCampaign.id);
                     if (error) {
-                        console.error('Error saving campaign changes:', error);
+                        alert('Error saving campaign changes: ' + error.message);
                         return;
                     }
-                    setCampaigns(prev => prev.map(c => c.id === editingCampaign.id ? { ...c, ...editingCampaign } : c));
+                    setCampaigns(prev => prev.map(c => c.id === editingCampaign.id ? { ...c, ...payload } : c));
                     setEditingCampaign(null);
                 } catch (err) {
-                    console.error('Unexpected error saving campaign changes:', err);
+                    alert('Unexpected error saving campaign changes: ' + err.message);
                 }
             };
 
@@ -304,30 +318,31 @@ const createNewCampaign = async () => {
   }
 
   const payload = {
-    // id:  ❌ remove this line — DB will fill UUID
+    // id: omitted — DB will fill UUID
     title: newCampaign.title.trim(),
     description: newCampaign.description?.trim() || '',
-    type: newCampaign.type || 'text',
+    type: normalizeType(newCampaign.type), // normalize campaign type ('text' or 'image')
     is_active: !!newCampaign.is_active
-    // created_at: ❌ optional; DB has a default
+    // created_at: DB default
   };
 
-  const { data, error } = await supabaseClient   // ← use your client var (supabase / sb / supabaseClient)
-    .from('campaigns')
-    .insert([payload])
-    .select()
-    .single();
-
-  if (error) {
-    alert(`Create failed: ${error.message}`);
-    console.error('createNewCampaign error', error);
-    return;
+  try {
+    const { data, error } = await supabaseClient
+      .from('campaigns')
+      .insert([payload])
+      .select()
+      .single();
+    if (error) {
+      alert('Create failed: ' + error.message);
+      return;
+    }
+    // Use the row returned by Supabase
+    setCampaigns(prev => [...prev, data]);
+    setNewCampaign({ title: '', description: '', type: 'text', is_active: true });
+    setSelectedCampaign(null);
+  } catch (err) {
+    alert('Unexpected error creating campaign: ' + err.message);
   }
-
-  // Use the row returned by Supabase
-  setCampaigns(prev => [...prev, data]);
-  setNewCampaign({ title: '', description: '', type: 'text', is_active: true });
-  setSelectedCampaign(null);
 };
 
 
