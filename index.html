@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -253,7 +252,7 @@
 
             // Handle direct writing on the wall
             const handleWallClickForWriting = (e) => {
-                if (placementMode !== 'direct' || userHasPosted || activeCampaign.type === 'image') return;
+                if (placementMode !== 'direct' || userHasPosted || !activeCampaign || activeCampaign.type === 'image') return;
                 
                 const container = wallScrollRef.current;
                 const rect = container.getBoundingClientRect();
@@ -270,7 +269,10 @@
             // to Supabase before updating the local state.  If an error occurs during
             // persistence, the user is notified and the post is not added locally.
             const handlePlaceDirectWriting = async () => {
-                if (!activeCampaign) return;
+                if (!activeCampaign) {
+                    setUserMessage('Go to Admin to create your first campaign.');
+                    return;
+                }
                 if (!directWritingText.trim()) {
                     setIsWritingDirectly(false);
                     return;
@@ -349,6 +351,10 @@
 
             // Handle image upload
             const handleImageUpload = (e) => {
+                if (!activeCampaign) {
+                    setUserMessage('Go to Admin to create your first campaign.');
+                    return;
+                }
                 if (activeCampaign.type !== 'image') return;
                 
                 const file = e.target.files[0];
@@ -425,7 +431,10 @@
 
             // Handle confession placement
             const handlePlaceConfession = async () => {
-                if (!activeCampaign) return;
+                if (!activeCampaign) {
+                    setUserMessage('Go to Admin to create your first campaign.');
+                    return;
+                }
                 if (!confessionText.trim()) {
                     setUserMessage("Please write something first");
                     return;
@@ -552,6 +561,7 @@
 
             // Handle confession removal
             const handleRemoveConfession = async () => {
+                if (!activeCampaign) return;
                 const userConf = confessions.find(conf => conf.owner === userId && conf.campaign_id === (activeCampaign && activeCampaign.id));
                 if (!userConf) {
                     setUserMessage("You haven't posted anything in this campaign yet.");
@@ -726,8 +736,8 @@
                 const url = window.location.href;
                 if (navigator.share) {
                     navigator.share({
-                        title: activeCampaign.title,
-                        text: activeCampaign.description,
+                        title: activeCampaign ? activeCampaign.title : "Campaign Wall",
+                        text: activeCampaign ? activeCampaign.description : "Check out this campaign wall",
                         url: url
                     })
                     .then(() => setUserMessage('Campaign shared successfully'))
@@ -747,6 +757,10 @@
 
             // Download campaign as image
             const downloadCampaign = () => {
+                if (!activeCampaign) {
+                    setUserMessage("No campaign to download");
+                    return;
+                }
                 setUserMessage("Preparing download...");
                 
                 setTimeout(() => {
@@ -851,15 +865,11 @@
                 })
                 : confessions;
 
-            // ---------------------------------------------------------------------
-            // If there is no active campaign yet, display a friendly message.  This
-            // occurs during the initial load before campaigns have been fetched or
-            // when no active campaigns exist.  Without this guard, the UI would
-            // attempt to access properties on a null campaign and error.
-            const hasCampaign   = !!activeCampaign;
-const campaignTitle = hasCampaign ? activeCampaign.title : 'No Campaign Yet';
-const campaignType  = hasCampaign ? activeCampaign.type  : 'text';
-const campaignDesc  = hasCampaign ? activeCampaign.description : '';
+            // Fallback variables for when there's no campaign
+            const hasCampaign = !!activeCampaign;
+            const campaignTitle = hasCampaign ? activeCampaign.title : 'No Campaign Yet';
+            const campaignType = hasCampaign ? activeCampaign.type : 'text';
+            const campaignDesc = hasCampaign ? activeCampaign.description : '';
 
             return (
                 <div className="min-h-screen w-full bg-gradient-to-br from-blue-50 to-purple-50 text-gray-900">
@@ -870,10 +880,10 @@ const campaignDesc  = hasCampaign ? activeCampaign.description : '';
                                 <div className="flex items-center">
                                     <h1 className="text-xl font-bold text-indigo-700">Enhanced Campaign Wall</h1>
                                     <span className="ml-2 px-2 py-1 bg-indigo-100 text-indigo-700 rounded-full text-xs font-medium">
-                                        {activeCampaign.title}
+                                        {campaignTitle}
                                     </span>
                                     <span className="ml-2 px-2 py-1 bg-purple-100 text-purple-700 rounded-full text-xs font-medium">
-                                        {activeCampaign.type === 'text' ? 'Text Campaign' : 'Photo Campaign'}
+                                        {campaignType === 'text' ? 'Text Campaign' : 'Photo Campaign'}
                                     </span>
                                 </div>
                                 
@@ -913,19 +923,24 @@ const campaignDesc  = hasCampaign ? activeCampaign.description : '';
                                             Select Campaign
                                         </label>
                                         <select
-                                            value={activeCampaign.id}
-                                            onChange={e => setActiveCampaign(campaigns.find(c => c.id === e.target.value))}
+                                            value={activeCampaign?.id || ''}
+                                            onChange={e => setActiveCampaign(campaigns.find(c => c.id === e.target.value) || null)}
                                             className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                                            disabled={!campaigns.length}
                                         >
-                                            {campaigns.map(campaign => (
-                                                <option key={campaign.id} value={campaign.id}>
-                                                    {campaign.title}
-                                                </option>
-                                            ))}
+                                            {!campaigns.length ? (
+                                                <option value="">No campaigns yet</option>
+                                            ) : (
+                                                campaigns.map(campaign => (
+                                                    <option key={campaign.id} value={campaign.id}>
+                                                        {campaign.title}
+                                                    </option>
+                                                ))
+                                            )}
                                         </select>
                                     </div>
                                     
-                                    {activeCampaign.type === 'text' ? (
+                                    {hasCampaign && activeCampaign.type === 'text' ? (
                                         <>
                                             <h2 className="text-lg font-semibold text-gray-900 mb-3">Create Your Post</h2>  
                                             
@@ -1003,7 +1018,7 @@ const campaignDesc  = hasCampaign ? activeCampaign.description : '';
                                                 </div>
                                             </div>
                                         </>
-                                    ) : (
+                                    ) : hasCampaign && activeCampaign.type === 'image' ? (
                                         <>
                                             <h2 className="text-lg font-semibold text-gray-900 mb-3">Upload Your Photo</h2>  
                                             
@@ -1030,6 +1045,11 @@ const campaignDesc  = hasCampaign ? activeCampaign.description : '';
                                                 </div>
                                             )}
                                         </>
+                                    ) : (
+                                        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-center">
+                                            <i className="fas fa-info-circle text-blue-500 text-2xl mb-2"></i>
+                                            <p className="text-sm text-blue-700">No active campaign. Go to Admin to create one.</p>
+                                        </div>
                                     )}
                                 </div>  
 
@@ -1077,83 +1097,85 @@ const campaignDesc  = hasCampaign ? activeCampaign.description : '';
                                             </div>  
                                         </div>  
                                         
-                                        <div>
-                                            <label className="block text-sm font-medium text-gray-700 mb-1">Placement Mode</label>
-                                            <div className="flex flex-col gap-2">
-                                                <label className="inline-flex items-center">
-                                                    <input
-                                                        type="radio"
-                                                        value="auto"
-                                                        checked={placementMode === 'auto'}
-                                                        onChange={() => setPlacementMode('auto')}
-                                                        className="mr-2"
-                                                    />
-                                                    Auto Place
-                                                </label>
-                                                <label className="inline-flex items-center">
-                                                    <input
-                                                        type="radio"
-                                                        value="manual"
-                                                        checked={placementMode === 'manual'}
-                                                        onChange={() => setPlacementMode('manual')}
-                                                        className="mr-2"
-                                                    />
-                                                    Click to Place
-                                                </label>
-                                                {activeCampaign.type === 'text' && (
+                                        {hasCampaign && (
+                                            <div>
+                                                <label className="block text-sm font-medium text-gray-700 mb-1">Placement Mode</label>
+                                                <div className="flex flex-col gap-2">
                                                     <label className="inline-flex items-center">
                                                         <input
                                                             type="radio"
-                                                            value="direct"
-                                                            checked={placementMode === 'direct'}
-                                                            onChange={() => {
-                                                                if (userHasPosted) {
-                                                                    setUserMessage("You can only post once per campaign");
-                                                                    return;
-                                                                }
-                                                                setPlacementMode('direct');
-                                                            }}
+                                                            value="auto"
+                                                            checked={placementMode === 'auto'}
+                                                            onChange={() => setPlacementMode('auto')}
                                                             className="mr-2"
                                                         />
-                                                        Write Directly on Wall
+                                                        Auto Place
                                                     </label>
+                                                    <label className="inline-flex items-center">
+                                                        <input
+                                                            type="radio"
+                                                            value="manual"
+                                                            checked={placementMode === 'manual'}
+                                                            onChange={() => setPlacementMode('manual')}
+                                                            className="mr-2"
+                                                        />
+                                                        Click to Place
+                                                    </label>
+                                                    {activeCampaign.type === 'text' && (
+                                                        <label className="inline-flex items-center">
+                                                            <input
+                                                                type="radio"
+                                                                value="direct"
+                                                                checked={placementMode === 'direct'}
+                                                                onChange={() => {
+                                                                    if (userHasPosted) {
+                                                                        setUserMessage("You can only post once per campaign");
+                                                                        return;
+                                                                    }
+                                                                    setPlacementMode('direct');
+                                                                }}
+                                                                className="mr-2"
+                                                            />
+                                                            Write Directly on Wall
+                                                        </label>
+                                                    )}
+                                                </div>
+                                                {placementMode === 'manual' && (
+                                                    <p className="text-xs text-gray-500 mt-1">Click on the wall to select a spot for your {activeCampaign.type === 'text' ? 'post' : 'image'}</p>
+                                                )}
+                                                {placementMode === 'direct' && (
+                                                    <p className="text-xs text-gray-500 mt-1">Click on the wall to start typing directly</p>
                                                 )}
                                             </div>
-                                            {placementMode === 'manual' && (
-                                                <p className="text-xs text-gray-500 mt-1">Click on the wall to select a spot for your {activeCampaign.type === 'text' ? 'post' : 'image'}</p>
-                                            )}
-                                            {placementMode === 'direct' && (
-                                                <p className="text-xs text-gray-500 mt-1">Click on the wall to start typing directly</p>
-                                            )}
-                                        </div>
+                                        )}
                                     </div>  
                                 </div>  
 
                                 <div className="bg-white rounded-xl shadow-sm p-5 border border-gray-200">  
-                                    <h2 className="text-lg font-semibold text-gray-900 mb-3">Post Your {activeCampaign.type === 'text' ? 'Post' : 'Photo'}</h2>  
+                                    <h2 className="text-lg font-semibold text-gray-900 mb-3">Post Your {hasCampaign ? (activeCampaign.type === 'text' ? 'Post' : 'Photo') : 'Content'}</h2>  
                                     
                                     <div className="space-y-3">  
-                                        {userHasPosted ? (  
+                                        {hasCampaign && userHasPosted ? (  
                                             <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-3">  
                                                 <p className="text-sm text-blue-700 flex items-center">  
                                                     <i className="fas fa-check-circle mr-1.5"></i>
                                                     You've already posted in this campaign  
                                                 </p>  
                                             </div>  
-                                        ) : (  
+                                        ) : hasCampaign ? (  
                                             <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-3">  
                                                 <p className="text-sm text-amber-700">  
                                                     Your {activeCampaign.type === 'text' ? 'post' : 'photo'} will be permanently added to this wall  
                                                 </p>  
                                             </div>  
-                                        )}  
+                                        ) : null}  
                                         
-                                        {activeCampaign.type === 'text' && placementMode !== 'direct' && (
+                                        {hasCampaign && activeCampaign.type === 'text' && placementMode !== 'direct' && (
                                             <button  
                                                 onClick={handlePlaceConfession}  
-                                                disabled={!confessionText.trim() || userHasPosted}  
+                                                disabled={!hasCampaign || !confessionText.trim() || userHasPosted}  
                                                 className={`w-full py-3 px-4 rounded-xl font-medium transition-all flex items-center justify-center ${  
-                                                    !confessionText.trim() || userHasPosted
+                                                    !hasCampaign || !confessionText.trim() || userHasPosted
                                                         ? 'bg-gray-200 text-gray-500 cursor-not-allowed'  
                                                         : 'bg-indigo-600 text-white hover:bg-indigo-700'  
                                                 }`}  
@@ -1168,27 +1190,27 @@ const campaignDesc  = hasCampaign ? activeCampaign.description : '';
                                         
                                         <button  
                                             onClick={handleRemoveConfession}  
-                                            disabled={!userHasPosted}  
+                                            disabled={!hasCampaign || !userHasPosted}  
                                             className={`w-full py-2 px-4 rounded-xl font-medium transition-all flex items-center justify-center ${  
-                                                !userHasPosted
+                                                !hasCampaign || !userHasPosted
                                                     ? 'bg-gray-100 text-gray-400 cursor-not-allowed'  
                                                     : 'bg-gray-100 text-gray-700 hover:bg-gray-200'  
                                             }`}  
                                         >  
-                                            Remove My {activeCampaign.type === 'text' ? 'Post' : 'Photo'}  
+                                            Remove My {hasCampaign ? (activeCampaign.type === 'text' ? 'Post' : 'Photo') : 'Content'}  
                                         </button>  
                                         
                                         <button  
                                             onClick={locateMyConfession}  
-                                            disabled={!userHasPosted}  
+                                            disabled={!hasCampaign || !userHasPosted}  
                                             className={`w-full py-2 px-4 rounded-xl font-medium transition-all flex items-center justify-center ${  
-                                                !userHasPosted
+                                                !hasCampaign || !userHasPosted
                                                     ? 'bg-gray-100 text-gray-400 cursor-not-allowed'  
                                                     : 'bg-gray-100 text-gray-700 hover:bg-gray-200'  
                                             }`}  
                                         >  
                                             <i className="fas fa-map-marker-alt mr-1.5"></i>
-                                            Find My {activeCampaign.type === 'text' ? 'Post' : 'Photo'}  
+                                            Find My {hasCampaign ? (activeCampaign.type === 'text' ? 'Post' : 'Photo') : 'Content'}  
                                         </button>  
 
                                         <button  
@@ -1201,7 +1223,12 @@ const campaignDesc  = hasCampaign ? activeCampaign.description : '';
 
                                         <button  
                                             onClick={downloadCampaign}  
-                                            className="w-full py-2 px-4 bg-green-100 text-green-700 rounded-xl hover:bg-green-200 transition-colors flex items-center justify-center"  
+                                            disabled={!hasCampaign}
+                                            className={`w-full py-2 px-4 rounded-xl font-medium transition-all flex items-center justify-center ${  
+                                                !hasCampaign
+                                                    ? 'bg-gray-100 text-gray-400 cursor-not-allowed'  
+                                                    : 'bg-green-100 text-green-700 hover:bg-green-200'  
+                                            }`}  
                                         >  
                                             <i className="fas fa-download mr-1.5"></i>
                                             Download Campaign  
@@ -1225,10 +1252,10 @@ const campaignDesc  = hasCampaign ? activeCampaign.description : '';
                                     <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-4">  
                                         <div>
                                             <h2 className="text-xl font-bold text-gray-900">  
-                                                "{activeCampaign.title}"  
+                                                "{campaignTitle}"  
                                             </h2>  
-                                            {activeCampaign.description && (
-                                                <p className="text-sm text-gray-600 mt-1">{activeCampaign.description}</p>
+                                            {campaignDesc && (
+                                                <p className="text-sm text-gray-600 mt-1">{campaignDesc}</p>
                                             )}
                                         </div>
                                         
@@ -1256,15 +1283,18 @@ const campaignDesc  = hasCampaign ? activeCampaign.description : '';
                                             </div>  
                                             
                                             <div className="text-sm text-gray-500 bg-gray-100 rounded-lg px-3 py-1.5">  
-                                                {filteredConfessions.length} {activeCampaign.type === 'text' ? 'posts' : 'photos'}  
+                                                {filteredConfessions.length} {hasCampaign ? (activeCampaign.type === 'text' ? 'posts' : 'photos') : 'items'}  
                                             </div>  
 
                                             <button
                                                 onClick={() => setTimeLapseMode(!timeLapseMode)}
+                                                disabled={!hasCampaign}
                                                 className={`text-sm px-3 py-1.5 rounded-lg transition-colors ${
-                                                    timeLapseMode 
-                                                        ? 'bg-indigo-600 text-white' 
-                                                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                                                    !hasCampaign
+                                                        ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                                                        : timeLapseMode 
+                                                            ? 'bg-indigo-600 text-white' 
+                                                            : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                                                 }`}
                                             >
                                                 <i className="fas fa-film mr-1"></i>
@@ -1273,7 +1303,7 @@ const campaignDesc  = hasCampaign ? activeCampaign.description : '';
                                         </div>  
                                     </div>  
 
-                                    {timeLapseMode && (
+                                    {timeLapseMode && hasCampaign && (
                                         <div className="mb-4 bg-gray-100 p-3 rounded-lg">
                                             <div className="flex items-center justify-between mb-2">
                                                 <span className="text-sm font-medium text-gray-700">Time Lapse</span>
@@ -1304,7 +1334,7 @@ const campaignDesc  = hasCampaign ? activeCampaign.description : '';
                                         <div   
                                             ref={wallScrollRef}  
                                             className="h-[60vh] overflow-auto relative"  
-                                            onClick={placementMode === 'direct' ? handleWallClickForWriting : onWallClick}
+                                            onClick={hasCampaign ? (placementMode === 'direct' ? handleWallClickForWriting : onWallClick) : undefined}
                                         >  
                                             <div
                                                 ref={wallInnerRef}  
@@ -1319,7 +1349,7 @@ const campaignDesc  = hasCampaign ? activeCampaign.description : '';
                                                     transformOrigin: 'center center'
                                                 }}  
                                             >  
-                                                {placementMode === 'manual' && pendingManualSpot && activeCampaign.type === 'text' && (
+                                                {hasCampaign && placementMode === 'manual' && pendingManualSpot && activeCampaign.type === 'text' && (
                                                     <div 
                                                         className="absolute pointer-events-none"
                                                         style={{ 
@@ -1335,7 +1365,7 @@ const campaignDesc  = hasCampaign ? activeCampaign.description : '';
                                                     />
                                                 )}
                                                 
-                                                {isWritingDirectly && directWritingPosition && (
+                                                {hasCampaign && isWritingDirectly && directWritingPosition && (
                                                     <div 
                                                         className="absolute bg-white border-2 border-indigo-400 rounded-lg p-2 shadow-lg z-50"
                                                         style={{ 
@@ -1443,24 +1473,28 @@ const campaignDesc  = hasCampaign ? activeCampaign.description : '';
                                         </div>  
                                     </div>  
                                     
-                                    <div className="mt-4 text-sm text-gray-600">  
-                                        <p>✨ Each {activeCampaign.type === 'text' ? 'post' : 'photo'} is styled uniquely, creating a beautiful mosaic of shared experiences.</p>  
-                                        <p className="mt-1">🖱️ Scroll to explore, zoom in/out, and click on items to see who posted them.</p>  
-                                    </div>  
+                                    {hasCampaign && (
+                                        <div className="mt-4 text-sm text-gray-600">  
+                                            <p>✨ Each {activeCampaign.type === 'text' ? 'post' : 'photo'} is styled uniquely, creating a beautiful mosaic of shared experiences.</p>  
+                                            <p className="mt-1">🖱️ Scroll to explore, zoom in/out, and click on items to see who posted them.</p>  
+                                        </div>  
+                                    )}
                                 </div>  
                                 
                                 <div className="bg-white rounded-xl shadow-sm p-5 border border-gray-200">  
                                     <h3 className="font-semibold text-gray-900 mb-2">About This Campaign</h3>  
                                     <p className="text-sm text-gray-600">  
-                                        {activeCampaign.description || "This campaign brings together community contributions to form a visual tapestry of shared experiences. Each item is a unique contribution to the collective story."}  
+                                        {hasCampaign ? (campaignDesc || "This campaign brings together community contributions to form a visual tapestry of shared experiences. Each item is a unique contribution to the collective story.") : "No active campaign. Go to Admin to create a campaign."}  
                                     </p>  
                                     
-                                    <div className="mt-4 flex flex-wrap gap-2">  
-                                        <button onClick={fitToFullContent} className="text-xs bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-1.5 rounded-lg transition-colors">  
-                                            <i className="fas fa-expand mr-1"></i>
-                                            View Full Campaign  
-                                        </button>  
-                                    </div>  
+                                    {hasCampaign && (
+                                        <div className="mt-4 flex flex-wrap gap-2">  
+                                            <button onClick={fitToFullContent} className="text-xs bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-1.5 rounded-lg transition-colors">  
+                                                <i className="fas fa-expand mr-1"></i>
+                                                View Full Campaign  
+                                            </button>  
+                                        </div>  
+                                    )}
                                 </div>  
                             </div>  
                         </div>  
