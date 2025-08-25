@@ -856,14 +856,10 @@
             // occurs during the initial load before campaigns have been fetched or
             // when no active campaigns exist.  Without this guard, the UI would
             // attempt to access properties on a null campaign and error.
-            if (!activeCampaign) {
-                return (
-                    <div className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-br from-blue-50 to-purple-50 text-gray-900">
-                        <h1 className="text-2xl font-bold mb-2">No Active Campaigns</h1>
-                        <p className="text-sm text-gray-600 text-center max-w-md px-4">There are currently no active campaigns available.  Once an administrator creates and activates a campaign, it will appear here automatically.  Please check back soon or contact the site administrator.</p>
-                    </div>
-                );
-            }
+            const hasCampaign   = !!activeCampaign;
+const campaignTitle = hasCampaign ? activeCampaign.title : 'No Campaign Yet';
+const campaignType  = hasCampaign ? activeCampaign.type  : 'text';
+const campaignDesc  = hasCampaign ? activeCampaign.description : '';
 
             return (
                 <div className="min-h-screen w-full bg-gradient-to-br from-blue-50 to-purple-50 text-gray-900">
