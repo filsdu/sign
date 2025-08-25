@@ -296,36 +296,42 @@
             };
 
             // Create new campaign
-            const createNewCampaign = async () => {
-                if (!newCampaign.title.trim()) {
-                    alert('Campaign title is required');
-                    return;
-                }
-                const campaign = {
-                    ...newCampaign,
-                    id: `campaign-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-                    created_at: new Date().toISOString()
-                };
-                try {
-                    const { error } = await supabaseClient
-                        .from('campaigns')
-                        .insert([campaign]);
-                    if (error) {
-                        console.error('Error creating campaign:', error);
-                        return;
-                    }
-                    setCampaigns(prev => [...prev, campaign]);
-                    // Reset form
-                    setNewCampaign({
-                        title: '',
-                        description: '',
-                        type: 'text',
-                        is_active: true
-                    });
-                } catch (err) {
-                    console.error('Unexpected error creating campaign:', err);
-                }
-            };
+           // Create new campaign (Supabase + visible error)
+const createNewCampaign = async () => {
+  if (!newCampaign.title.trim()) {
+    alert('Campaign title is required');
+    return;
+  }
+
+  const campaign = {
+    id: `campaign-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+    title: newCampaign.title.trim(),
+    description: newCampaign.description?.trim() || '',
+    type: newCampaign.type || 'text',            // 'text' | 'image'
+    is_active: !!newCampaign.is_active,
+    created_at: new Date().toISOString()
+  };
+
+  const { data, error } = await supabaseClient
+    .from('campaigns')
+    .insert([campaign])
+    .select()
+    .single();
+
+  if (error) {
+    alert(`Create failed: ${error.message}`);
+    console.error('createNewCampaign error', error);
+    return;
+  }
+
+  // Use the row returned by Supabase (in case DB adds defaults)
+  setCampaigns(prev => [...prev, data]);
+
+  // Reset and close the form panel
+  setNewCampaign({ title: '', description: '', type: 'text', is_active: true });
+  setSelectedCampaign(null);
+};
+
 
             // Filter confessions based on filters
             const filteredConfessions = allConfessions.filter(confession => {
