@@ -1,3 +1,5 @@
+
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -18,7 +20,7 @@
         // Main Enhanced Campaign Board Component
         function EnhancedCampaignBoard() {
             // State management
-            // Campaigns are now loaded from Supabase instead of being hard‑coded.  An empty array is used as the default state
+            // Campaigns are now loaded from Supabase instead of being hard-coded.  An empty array is used as the default state
             // until the asynchronous fetch completes.  Once campaigns are fetched, the first active campaign will be selected automatically.
             const [campaigns, setCampaigns] = React.useState([]);
             const [activeCampaign, setActiveCampaign] = React.useState(null);
@@ -48,21 +50,10 @@
             const [editFontSize, setEditFontSize] = React.useState(16);
             const [editRotation, setEditRotation] = React.useState(0);
             const [timeLapseMode, setTimeLapseMode] = React.useState(false);
-            // Track whether the time‑lapse modal is visible.  When true, the board is shown
-            // in a full‑screen overlay with playback controls.
-            const [showTimeLapseModal, setShowTimeLapseModal] = React.useState(false);
             const [timeLapseProgress, setTimeLapseProgress] = React.useState(100);
             const [timeLapsePlaying, setTimeLapsePlaying] = React.useState(false);
             const nameTimeoutRef = React.useRef(null);
             const timeLapseIntervalRef = React.useRef(null);
-
-            // Derive the highest like count among all confessions.  This value is used to
-            // highlight the most liked post with a bounce animation.  If there are no likes
-            // yet, highestLikes will be zero and no posts will bounce.
-            const highestLikes = React.useMemo(() => {
-                if (!confessions || confessions.length === 0) return 0;
-                return Math.max(...confessions.map(c => c.likes || 0), 0);
-            }, [confessions]);
 
             // Constants
             const WALL_WIDTH = 10000;
@@ -103,7 +94,7 @@
             }, []);
 
             // Check if the current user has already placed a confession in the active campaign.
-            // Instead of a site‑wide check, this now validates on a per‑campaign basis.  If the
+            // Instead of a site-wide check, this now validates on a per‑campaign basis.  If the
             // active campaign is null (e.g. while campaigns are still loading), no one is
             // considered to have posted.
             const userHasPosted = React.useMemo(() => 
@@ -198,82 +189,250 @@
 
                 return () => {
                     ignore = true;
-                    channel.unsubscribe();
+                    supabaseClient.removeChannel(channel);
                 };
             }, [activeCampaign]);
 
-            // -------------------------------------------------------------------------
+            // Handle confession name display
+            const handleConfessionClick = (confId) => {
+                if (nameTimeoutRef.current) {
+                    clearTimeout(nameTimeoutRef.current);
+                }
+                setShownConfessionId(confId);
+                nameTimeoutRef.current = setTimeout(() => setShownConfessionId(null), 3000);
+            };
+
             // Placement Engine
-            //
-            // This helper object calculates where to place each confession on the wall,
-            // preventing overlaps by checking rotated bounding boxes.  It is used
-            // for both auto and manual placement.  The engine can be replaced if
-            // there are future improvements to placement logic.
             const PlacementEngine = {
-                // Compute the bounding box of a rotated rectangle
-                rotatedBounds(w, h, angle) {
-                    const sin = Math.abs(Math.sin(angle));
-                    const cos = Math.abs(Math.cos(angle));
-                    const rw = w * cos + h * sin;
-                    const rh = w * sin + h * cos;
+                // Calculate rotated bounds
+                rotatedBounds: (w, h, rotRad) => {
+                    const cos = Math.cos(rotRad);
+                    const sin = Math.sin(rotRad);
+                    const rw = Math.abs(w * cos) + Math.abs(h * sin);
+                    const rh = Math.abs(w * sin) + Math.abs(h * cos);
                     return { rw, rh };
                 },
-                // Check if two rectangles overlap
-                overlap(a, b) {
-                    return !(
-                        a.x + a.rw <= b.x ||
-                        b.x + b.rw <= a.x ||
-                        a.y + a.rh <= b.y ||
-                        b.y + b.rh <= a.y
-                    );
+
+                // Check if two rectangles overlap (with buffer for safety)
+                overlaps: (a, b) => {
+                    const buffer = 5;
+                    return a.x < b.x + b.w + buffer &&
+                           a.x + a.w + buffer > b.x &&  
+                           a.y < b.y + b.h + buffer &&  
+                           a.y + a.h + buffer > b.y;
                 },
-                // Find a placement for a new post
-                findPlacement({ wallWidth, wallHeight, itemW, itemH, rotRad, existing }) {
-                    const { rw, rh } = this.rotatedBounds(itemW, itemH, rotRad);
-                    for (let tries = 0; tries < 1000; tries++) {
-                        const x = Math.random() * (wallWidth - rw);
-                        const y = Math.random() * (wallHeight - rh);
-                        const newRect = { x, y, rw, rh };
-                        let collision = false;
-                        for (const ex of existing) {
-                            const { rw: erw, rh: erh } = this.rotatedBounds(ex.w, ex.h, ex.rot);
-                            if (this.overlap(newRect, { x: ex.x, y: ex.y, rw: erw, rh: erh })) {
-                                collision = true;
-                                break;
-                            }
-                        }
-                        if (!collision) {
-                            return { x, y };
-                        }
+
+                // Find placement
+                findPlacement: ({ wallWidth, wallHeight, itemW, itemH, rotRad, existing, maxTries = 5000 }) => {
+                    const { rw, rh } = PlacementEngine.rotatedBounds(itemW, itemH, rotRad);
+                    const w = Math.ceil(rw);
+                    const h = Math.ceil(rh);
+                    
+                    // Try to find a valid position
+                    for (let i = 0; i < maxTries; i++) {
+                        const x = Math.floor(Math.random() * Math.max(1, wallWidth - w));
+                        const y = Math.floor(Math.random() * Math.max(1, wallHeight - h));
+                        
+                        const bb = { x, y, w, h };
+                        
+                        // Check for collisions with existing items
+                        const collides = existing.some(e => {
+                            const eBounds = PlacementEngine.rotatedBounds(e.w, e.h, e.rot);  
+                            return PlacementEngine.overlaps(bb, { 
+                                x: e.x, 
+                                y: e.y, 
+                                w: eBounds.rw, 
+                                h: eBounds.rh 
+                            });
+                        });
+                        
+                        if (!collides) return { x, y };
                     }
-                    return null;
+                    
+                    return null; // No valid position found
                 }
             };
 
-            // -------------------------------------------------------------------------
-            // Campaign Data Helpers
-            //
-            // Determine whether a campaign is selected and accessible.  If no campaign is
-            // active, certain UI elements will be disabled and the user will be prompted
-            // to ask the admin to create one.
-            const hasCampaign = Boolean(activeCampaign);
-            const campaignDesc = activeCampaign ? activeCampaign.description : '';
+            // Handle direct writing on the wall
+            const handleWallClickForWriting = (e) => {
+                if (placementMode !== 'direct' || userHasPosted || !activeCampaign || activeCampaign.type === 'image') return;
+                
+                const container = wallScrollRef.current;
+                const rect = container.getBoundingClientRect();
+                const x = (e.clientX - rect.left) / zoom;
+                const y = (e.clientY - rect.top) / zoom;
+                
+                setIsWritingDirectly(true);
+                setDirectWritingPosition({ x, y });
+                setDirectWritingText('');
+            };
 
-            // Filter confessions by time‑lapse progress.  When time‑lapse mode is active,
-            // only posts created at or before the selected percentage of campaign time are shown.
-            const filteredConfessions = React.useMemo(() => {
-                if (!timeLapseMode || !hasCampaign) return confessions;
-                const now = new Date();
-                const campaignStart = new Date(activeCampaign.created_at);
-                const totalTime = now.getTime() - campaignStart.getTime();
-                const threshold = campaignStart.getTime() + (totalTime * (timeLapseProgress / 100));
-                return confessions.filter(conf => new Date(conf.created_at).getTime() <= threshold);
-            }, [confessions, timeLapseMode, timeLapseProgress, hasCampaign, activeCampaign]);
+            // Handle placing direct writing
+            // Place text directly onto the wall.  This function now persists the post
+            // to Supabase before updating the local state.  If an error occurs during
+            // persistence, the user is notified and the post is not added locally.
+            const handlePlaceDirectWriting = async () => {
+                if (!activeCampaign) {
+                    setUserMessage('Go to Admin to create your first campaign.');
+                    return;
+                }
+                if (!directWritingText.trim()) {
+                    setIsWritingDirectly(false);
+                    return;
+                }
+                
+                const text = directWritingText.trim();
+                const textLength = text.length;
+                const words = text.split(' ');
+                const lineCount = Math.max(1, Math.ceil(textLength / 15));
 
-            // -------------------------------------------------------------------------
-            // UI Event Handlers
-            //
-            // Add new confession (text) to Supabase.  Supports auto and manual placement.
+                // Calculate dimensions based on text
+                const baseWidth = Math.max(
+                    MIN_CONFESSION_WIDTH, 
+                    Math.min(MAX_CONFESSION_WIDTH, 70 + textLength * 4)
+                );
+
+                const baseHeight = Math.max(
+                    MIN_CONFESSION_HEIGHT, 
+                    Math.min(MAX_CONFESSION_HEIGHT, 40 + lineCount * 20)
+                );
+
+                const w = Math.round(baseWidth);
+                const h = Math.round(baseHeight);
+                const rotDeg = Math.round(rotation);
+                const rotRad = (rotDeg * Math.PI) / 180;
+
+                // Adjust position to center the confession
+                const { rw, rh } = PlacementEngine.rotatedBounds(w, h, rotRad);
+                const x = Math.max(0, Math.min(directWritingPosition.x - rw/2, WALL_WIDTH - rw));
+                const y = Math.max(0, Math.min(directWritingPosition.y - rh/2, WALL_HEIGHT - rh));
+
+                const confessionData = {  
+                    id: `conf-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+                    campaign_id: activeCampaign.id,  
+                    owner: userId,  
+                    text: text,  
+                    color: textColor,
+                    boundary_color: boundaryColor,
+                    font_family: fontFamily,
+                    font_size: fontSize,
+                    x: Math.round(x),  
+                    y: Math.round(y),  
+                    w, h,  
+                    rot: rotRad,  
+                    name: userNickname,
+                    created_at: new Date().toISOString(),
+                    type: 'text'
+                };
+
+                try {
+                    // Persist to Supabase
+                    const { error } = await supabaseClient
+                        .from('confessions')
+                        .insert([confessionData]);
+                    if (error) {
+                        console.error('Error inserting direct writing:', error);
+                        setUserMessage('Failed to submit your post. Please try again.');
+                        return;
+                    }
+                    // Optimistically update local state.  The real‑time listener
+                    // will also add this record to the list, but we add it here
+                    // immediately for better UX.  Duplicate entries are avoided by
+                    // the listener.
+                    setConfessions(prev => [...prev, confessionData]);
+                    setIsWritingDirectly(false);
+                    setUserMessage("Your post has been added to the campaign!");
+                    
+                    setTimeout(() => {
+                        locateMyConfession(true);
+                    }, 500);
+                } catch (err) {
+                    console.error('Unexpected error inserting direct writing:', err);
+                    setUserMessage('Something went wrong. Please try again.');
+                }
+            };
+
+            // Handle image upload
+            const handleImageUpload = (e) => {
+                if (!activeCampaign) {
+                    setUserMessage('Go to Admin to create your first campaign.');
+                    return;
+                }
+                if (activeCampaign.type !== 'image') return;
+                
+                const file = e.target.files[0];
+                if (!file) return;
+                
+                if (!file.type.match('image.*')) {
+                    setUserMessage("Please upload an image file");
+                    return;
+                }
+                
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    setUploadedImage(event.target.result);
+                    setUserMessage("Image uploaded. Click on the wall to place it.");
+                    setPlacementMode('manual');
+                };
+                reader.readAsDataURL(file);
+            };
+
+            // Handle placing image on the wall
+            const handlePlaceImage = async (e) => {
+                if (!activeCampaign || !uploadedImage || activeCampaign.type !== 'image' || userHasPosted) return;
+                
+                const container = wallScrollRef.current;
+                const rect = container.getBoundingClientRect();
+                const x = (e.clientX - rect.left) / zoom;
+                const y = (e.clientY - rect.top) / zoom;
+                
+                // Standard size for images
+                const w = 200;
+                const h = 200;
+                const rotRad = (rotation * Math.PI) / 180;
+                
+                // Adjust position to center the image
+                const { rw, rh } = PlacementEngine.rotatedBounds(w, h, rotRad);
+                const finalX = Math.max(0, Math.min(x - rw/2, WALL_WIDTH - rw));
+                const finalY = Math.max(0, Math.min(y - rh/2, WALL_HEIGHT - rh));
+
+                const confessionData = {  
+                    id: `conf-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+                    campaign_id: activeCampaign.id,  
+                    owner: userId,  
+                    image: uploadedImage,
+                    x: Math.round(finalX),  
+                    y: Math.round(finalY),  
+                    w, h,  
+                    rot: rotRad,  
+                    name: userNickname,
+                    created_at: new Date().toISOString(),
+                    type: 'image'
+                };
+
+                try {
+                    const { error } = await supabaseClient
+                        .from('confessions')
+                        .insert([confessionData]);
+                    if (error) {
+                        console.error('Error inserting image post:', error);
+                        setUserMessage('Failed to submit your image. Please try again.');
+                        return;
+                    }
+                    setConfessions(prev => [...prev, confessionData]);
+                    setUploadedImage(null);
+                    setUserMessage("Your image has been added to the campaign!");
+                    
+                    setTimeout(() => {
+                        locateMyConfession(true);
+                    }, 500);
+                } catch (err) {
+                    console.error('Unexpected error inserting image post:', err);
+                    setUserMessage('Something went wrong. Please try again.');
+                }
+            };
+
+            // Handle confession placement
             const handlePlaceConfession = async () => {
                 if (!activeCampaign) {
                     setUserMessage('Go to Admin to create your first campaign.');
@@ -312,171 +471,125 @@
                     if (placementMode === 'manual' && pendingManualSpot) {
                         // Try to place at the clicked spot
                         const { rw, rh } = PlacementEngine.rotatedBounds(w, h, rotRad);
-                        const x = Math.max(0, Math.min(pendingManualSpot.x - rw / 2, WALL_WIDTH - rw));
-                        const y = Math.max(0, Math.min(pendingManualSpot.y - rh / 2, WALL_HEIGHT - rh));
-                        spot = { x, y };
+                        const bb = { 
+                            x: Math.max(0, Math.min(pendingManualSpot.x - rw/2, WALL_WIDTH - rw)), 
+                            y: Math.max(0, Math.min(pendingManualSpot.y - rh/2, WALL_HEIGHT - rh)), 
+                            w: rw, 
+                            h: rh 
+                        };
+                        
+                        // Check if it overlaps with existing confessions
+                        const nearbyItems = confessions.map(conf => {
+                            const bounds = PlacementEngine.rotatedBounds(conf.w, conf.h, conf.rot);
+                            return { x: conf.x, y: conf.y, w: bounds.rw, h: bounds.rh };
+                        });
+                        
+                        const collides = nearbyItems.some(item => PlacementEngine.overlaps(bb, item));
+                        
+                        if (!collides) {
+                            spot = { x: bb.x, y: bb.y };
+                        } else {
+                            // Try to find a nearby spot
+                            spot = PlacementEngine.findPlacement({
+                                wallWidth: WALL_WIDTH,
+                                wallHeight: WALL_HEIGHT,
+                                itemW: w,
+                                itemH: h,
+                                rotRad,
+                                existing: confessions,
+                                maxTries: 1000
+                            });
+                        }
                     } else {
-                        // Auto placement using placement engine
-                        const existing = confessions.filter(c => c.campaign_id === activeCampaign.id).map(c => ({
-                            x: c.x,
-                            y: c.y,
-                            w: c.w,
-                            h: c.h,
-                            rot: c.rot
-                        }));
-                        const placement = PlacementEngine.findPlacement({
+                        // Auto placement
+                        spot = PlacementEngine.findPlacement({
                             wallWidth: WALL_WIDTH,
                             wallHeight: WALL_HEIGHT,
                             itemW: w,
                             itemH: h,
                             rotRad,
-                            existing
+                            existing: confessions,
+                            maxTries: 5000
                         });
-                        if (!placement) {
-                            setUserMessage('Could not find space on the wall. Please try a different spot.');
-                            return;
-                        }
-                        spot = placement;
                     }
 
-                    const finalX = Math.round(spot.x);
-                    const finalY = Math.round(spot.y);
-                    const confessionData = {
-                        id: `conf-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
-                        campaign_id: activeCampaign.id,
-                        owner: userId,
-                        name: displayName || userNickname,
-                        text: confessionText,
+                    if (!spot) {  
+                        setUserMessage("The wall is getting full! Try a different size or rotation.");  
+                        return;  
+                    }
+
+                    const confessionData = {  
+                        id: `conf-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+                        campaign_id: activeCampaign.id,  
+                        owner: userId,  
+                        text: confessionText.trim(),  
                         color: textColor,
                         boundary_color: boundaryColor,
                         font_family: fontFamily,
                         font_size: fontSize,
-                        rot: rotRad,
-                        x: finalX,
-                        y: finalY,
-                        w,
-                        h,
+                        x: Math.round(spot.x),  
+                        y: Math.round(spot.y),  
+                        w, h,  
+                        rot: rotRad,  
+                        name: userNickname,
                         created_at: new Date().toISOString(),
-                        type: 'text',
-                        likes: 0,
-                        liked_by: []
+                        type: 'text'
                     };
 
-                    const { error } = await supabaseClient
-                        .from('confessions')
-                        .insert([confessionData]);
-
-                    if (error) {
-                        console.error('Error inserting confession:', error);
-                        setUserMessage('Failed to submit your post. Please try again.');
-                        return;
+                    try {
+                        const { error } = await supabaseClient
+                            .from('confessions')
+                            .insert([confessionData]);
+                        if (error) {
+                            console.error('Error inserting post:', error);
+                            setUserMessage('Failed to submit your post. Please try again.');
+                            return;
+                        }
+                        setConfessions(prev => [...prev, confessionData]);
+                        setUserMessage("Your post has been added to the campaign!");  
+                        setConfessionText("");  
+                        setPendingManualSpot(null);
+                        setTimeout(() => {
+                            locateMyConfession(true);
+                        }, 500);  
+                    } catch (err) {
+                        console.error('Unexpected error inserting post:', err);
+                        setUserMessage('Something went wrong. Please try again.');
                     }
-
-                    setConfessions(prev => [...prev, confessionData]);
-                    setConfessionText('');
-                    setPendingManualSpot(null);
-                    setUserMessage("Your post has been added to the campaign!");
-
-                    // Wait a moment then center on your new post
-                    setTimeout(() => {
-                        locateMyConfession(true);
-                    }, 500);
-                } catch (err) {
-                    console.error('Unexpected error placing confession:', err);
-                    setUserMessage("Something went wrong. Please try again.");
+                } catch (err) {  
+                    console.error("Placement error:", err);  
+                    setUserMessage("Something went wrong. Please try again.");  
                 }
             };
 
-            // Submit an uploaded image to the wall.  This function supports both
-            // auto and manual placement modes.  If the user has selected a manual
-            // spot, the image will be placed there.  Otherwise, the placement
-            // engine will find an available position automatically.  Rotation
-            // options and image dimensions are respected.  After the image is
-            // posted, the local state and Supabase are updated and the upload
-            // state is cleared.
-            const handleSubmitImage = async () => {
-                if (!activeCampaign || !uploadedImage || activeCampaign.type !== 'image') {
-                    setUserMessage('Please upload an image first');
+            // Handle confession removal
+            const handleRemoveConfession = async () => {
+                if (!activeCampaign) return;
+                const userConf = confessions.find(conf => conf.owner === userId && conf.campaign_id === (activeCampaign && activeCampaign.id));
+                if (!userConf) {
+                    setUserMessage("You haven't posted anything in this campaign yet.");
                     return;
                 }
-                if (userHasPosted) {
-                    setUserMessage('You can only post once per campaign');
-                    return;
-                }
-                // Standard size for images
-                const w = 200;
-                const h = 200;
-                const rotRad = (rotation * Math.PI) / 180;
-                const { rw, rh } = PlacementEngine.rotatedBounds(w, h, rotRad);
-                let finalX, finalY;
-                // Manual placement
-                if (placementMode === 'manual' && pendingManualSpot) {
-                    finalX = Math.max(0, Math.min(pendingManualSpot.x - rw / 2, WALL_WIDTH - rw));
-                    finalY = Math.max(0, Math.min(pendingManualSpot.y - rh / 2, WALL_HEIGHT - rh));
-                } else {
-                    // Auto placement
-                    const existing = confessions.filter(c => c.campaign_id === activeCampaign.id).map(c => ({
-                        x: c.x,
-                        y: c.y,
-                        w: c.w,
-                        h: c.h,
-                        rot: c.rot
-                    }));
-                    const placement = PlacementEngine.findPlacement({
-                        wallWidth: WALL_WIDTH,
-                        wallHeight: WALL_HEIGHT,
-                        itemW: w,
-                        itemH: h,
-                        rotRad,
-                        existing
-                    });
-                    if (!placement) {
-                        setUserMessage('Could not find space on the wall. Please try a different spot.');
-                        return;
-                    }
-                    finalX = placement.x;
-                    finalY = placement.y;
-                }
-                const confessionData = {
-                    id: `conf-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-                    campaign_id: activeCampaign.id,
-                    owner: userId,
-                    image: uploadedImage,
-                    x: Math.round(finalX),
-                    y: Math.round(finalY),
-                    w,
-                    h,
-                    rot: rotRad,
-                    name: userNickname,
-                    created_at: new Date().toISOString(),
-                    type: 'image',
-                    likes: 0,
-                    liked_by: []
-                };
+                setUserMessage("Removing your post...");
                 try {
                     const { error } = await supabaseClient
                         .from('confessions')
-                        .insert([confessionData]);
+                        .delete()
+                        .eq('id', userConf.id);
                     if (error) {
-                        console.error('Error inserting image post:', error);
-                        setUserMessage('Failed to submit your image. Please try again.');
+                        console.error('Error removing post:', error);
+                        setUserMessage('Failed to remove your post. Please try again.');
                         return;
                     }
-                    setConfessions(prev => [...prev, confessionData]);
-                    setUploadedImage(null);
-                    setPendingManualSpot(null);
-                    setUserMessage('Your image has been added to the campaign!');
-                    setTimeout(() => {
-                        locateMyConfession(true);
-                    }, 500);
+                    setConfessions(prev => prev.filter(conf => conf.id !== userConf.id));
+                    setUserMessage("Your post has been removed.");
                 } catch (err) {
-                    console.error('Unexpected error inserting image post:', err);
-                    setUserMessage('Something went wrong. Please try again.');
+                    console.error('Unexpected error removing post:', err);
+                    setUserMessage('Failed to remove your post. Please try again.');
                 }
             };
 
-            // Handle editing an existing post.  This stores the ID being edited and
-            // populates the edit form with that post's current settings.
+            // Handle post editing
             const handleEditConfession = (confId) => {
                 const conf = confessions.find(c => c.id === confId);
                 if (!conf) return;
@@ -522,328 +635,338 @@
                         })
                         .eq('id', editingPostId);
                     if (error) {
-                        console.error('Error saving edits:', error);
-                        setUserMessage("Failed to update your post. Please try again.");
+                        console.error('Error updating post:', error);
                     }
                 } catch (err) {
-                    console.error('Unexpected error updating confession:', err);
-                    setUserMessage("Something went wrong. Please try again.");
+                    console.error('Unexpected error updating post:', err);
                 }
             };
 
-            // Delete confession
-            const handleRemoveConfession = async () => {
-                if (!activeCampaign) {
-                    setUserMessage('No active campaign to remove a post from.');
-                    return;
-                }
-                if (!userHasPosted) {
-                    setUserMessage("You haven't posted yet!");
-                    return;
-                }
-                setUserMessage("Removing your post...");
-
-                // Find the user's confession for the current campaign
-                const userConf = confessions.find(conf => conf.owner === userId && conf.campaign_id === activeCampaign.id);
-
-                if (!userConf) {
-                    setUserMessage("You haven't posted in this campaign.");
+            // Locate user's confession with auto zoom
+            const locateMyConfession = (autoZoom = false) => {
+                const userConf = confessions.find(conf => conf.owner === userId);
+                if (!userConf || !wallScrollRef.current) {
+                    setUserMessage("No post found.");
                     return;
                 }
                 
-                try {
-                    await supabaseClient
-                        .from('confessions')
-                        .delete()
-                        .eq('id', userConf.id);
-                    
-                    setConfessions(prev => prev.filter(conf => conf.id !== userConf.id));
-                    setUserMessage("Your post has been removed.");
-                } catch (err) {
-                    console.error('Unexpected error removing post:', err);
-                    setUserMessage('Failed to remove your post. Please try again.');
+                const container = wallScrollRef.current;
+                const { rw, rh } = PlacementEngine.rotatedBounds(userConf.w, userConf.h, userConf.rot);
+                const cx = userConf.x + rw / 2;
+                const cy = userConf.y + rh / 2;
+
+                if (autoZoom) {
+                    // Calculate optimal zoom to show confession clearly
+                    const targetZoom = Math.min(
+                        1, // Cap at 100%
+                        (container.clientWidth - 40) / (rw * 1.5), // 1.5 times the confession width with padding
+                        (container.clientHeight - 40) / (rh * 1.5)
+                    );
+                    setZoom(Math.max(0.2, Math.min(2, targetZoom))); // Keep between 20% and 200%
+                }
+                
+                const left = Math.max(0, Math.min(
+                    cx - container.clientWidth / (2 * zoom),
+                    WALL_WIDTH - container.clientWidth / zoom
+                ));
+                
+                const top = Math.max(0, Math.min(
+                    cy - container.clientHeight / (2 * zoom),
+                    WALL_HEIGHT - container.clientHeight / zoom
+                ));
+                
+                container.scrollTo({ left, top, behavior: "smooth" });
+                
+                // Highlight confession
+                const el = wallInnerRef.current?.querySelector(`[data-conf-id="${userConf.id}"]`);
+                if (el) {
+                    el.setAttribute('data-flash', '1');
+                    setTimeout(() => el.removeAttribute('data-flash'), 1500);
                 }
             };
 
-            // Handle liking a confession.  Users can like any post once; subsequent
-            // clicks do nothing.  The like count and list of users who have liked
-            // the post are persisted to Supabase.  The local state is updated
-            // optimistically for immediate feedback.
-            const handleLikeConfession = async (confId) => {
-                const conf = confessions.find(c => c.id === confId);
-                if (!conf) return;
-                const likedBy = Array.isArray(conf.liked_by) ? conf.liked_by : [];
-                // Do not allow duplicate likes
-                if (likedBy.includes(userId)) {
-                    return;
-                }
-                const newLikes = (conf.likes || 0) + 1;
-                const newLikedBy = [...likedBy, userId];
-                // Optimistically update local state
-                setConfessions(prev => prev.map(c => {
-                    if (c.id === confId) {
-                        return { ...c, likes: newLikes, liked_by: newLikedBy };
-                    }
-                    return c;
-                }));
-                try {
-                    await supabaseClient
-                        .from('confessions')
-                        .update({ likes: newLikes, liked_by: newLikedBy })
-                        .eq('id', confId);
-                } catch (err) {
-                    console.error('Error updating like count:', err);
-                }
+            // Fit to full content
+            const fitToFullContent = () => {
+                if (!wallScrollRef.current || confessions.length === 0) return;
+
+                const container = wallScrollRef.current;
+
+                // Calculate bounding box of all confessions
+                let minX = Infinity, minY = Infinity, maxX = 0, maxY = 0;
+                confessions.forEach(conf => {
+                    const { rw, rh } = PlacementEngine.rotatedBounds(conf.w, conf.h, conf.rot);
+                    minX = Math.min(minX, conf.x);
+                    minY = Math.min(minY, conf.y);
+                    maxX = Math.max(maxX, conf.x + rw);
+                    maxY = Math.max(maxY, conf.y + rh);
+                });
+
+                const contentWidth = maxX - minX;
+                const contentHeight = maxY - minY;
+
+                // Calculate zoom to fit content
+                const zoomX = container.clientWidth / contentWidth;
+                const zoomY = container.clientHeight / contentHeight;
+                const targetZoom = Math.min(zoomX, zoomY, 1) * 0.9; // 90% to add padding
+                setZoom(targetZoom);
+
+                // Center scroll
+                const cx = minX + contentWidth / 2;
+                const cy = minY + contentHeight / 2;
+                const left = Math.max(0, cx - container.clientWidth / (2 * targetZoom));
+                const top = Math.max(0, cy - container.clientHeight / (2 * targetZoom));
+                container.scrollTo({ left, top, behavior: "smooth" });
             };
 
             // Handle wall click for manual placement
             const onWallClick = (e) => {
                 if (!activeCampaign) return;
-                if (placementMode === 'manual') {
+                if (placementMode === 'manual' && activeCampaign.type === 'text') {
                     const container = wallScrollRef.current;
                     const rect = container.getBoundingClientRect();
                     const x = (e.clientX - rect.left) / zoom;
                     const y = (e.clientY - rect.top) / zoom;
+                    
                     setPendingManualSpot({ x, y });
-                    setUserMessage(`Spot selected. Click "Post to Wall" to place your ${activeCampaign.type === 'text' ? 'post' : 'photo'}.`);
+                    setUserMessage('Spot selected. Click "Post to Wall" to place your post.');
+                } else if (placementMode === 'manual' && activeCampaign.type === 'image' && uploadedImage) {
+                    handlePlaceImage(e);
                 }
             };
 
-            // Toggle time‑lapse mode and open/close the modal
-            const toggleTimeLapse = () => {
-                setTimeLapseMode(prev => {
-                    const newValue = !prev;
-                    if (!newValue) {
-                        setTimeLapsePlaying(false);
-                        setShowTimeLapseModal(false);
-                    } else {
-                        setShowTimeLapseModal(true);
-                    }
-                    return newValue;
-                });
+            // Share campaign
+            const shareCampaign = () => {
+                const url = window.location.href;
+                if (navigator.share) {
+                    navigator.share({
+                        title: activeCampaign ? activeCampaign.title : "Campaign Wall",
+                        text: activeCampaign ? activeCampaign.description : "Check out this campaign wall",
+                        url: url
+                    })
+                    .then(() => setUserMessage('Campaign shared successfully'))
+                    .catch(err => {
+                        if (err.name !== 'AbortError') {
+                            navigator.clipboard.writeText(url)
+                            .then(() => setUserMessage('Campaign link copied to clipboard'))
+                            .catch(() => setUserMessage('Failed to copy link'));
+                        }
+                    });
+                } else {
+                    navigator.clipboard.writeText(url)
+                    .then(() => setUserMessage('Campaign link copied to clipboard'))
+                    .catch(() => setUserMessage('Failed to copy link'));
+                }
             };
 
-            // Fit to full content
-            const fitToFullContent = () => {
-                if (!hasCampaign) return;
-                const container = wallScrollRef.current;
-                const { offsetWidth: width, offsetHeight: height } = container;
-                const contentWidth = WALL_WIDTH * zoom;
-                const contentHeight = WALL_HEIGHT * zoom;
-                const minX = 0;
-                const minY = 0;
-                // Center scroll
-                const cx = minX + contentWidth / 2;
-                const cy = minY + contentHeight / 2;
-                const left = Math.max(0, cx - container.clientWidth / (2 * zoom));
-                const top = Math.max(0, cy - container.clientHeight / (2 * zoom));
-                container.scrollTo({ left, top, behavior: "smooth" });
-            };
-
-            // Locate the user's post
-            const locateMyConfession = (smooth = true) => {
-                if (!activeCampaign) return;
-                const myConf = confessions.find(
-                    conf => conf.owner === userId && conf.campaign_id === activeCampaign.id
-                );
-                if (!myConf) {
-                    setUserMessage("You haven't posted yet!");
+            // Download campaign as image
+            const downloadCampaign = () => {
+                if (!activeCampaign) {
+                    setUserMessage("No campaign to download");
                     return;
                 }
-                const container = wallScrollRef.current;
-                const elementX = myConf.x + myConf.w / 2;
-                const elementY = myConf.y + myConf.h / 2;
-                const scrollX = elementX * zoom - container.clientWidth / 2;
-                const scrollY = elementY * zoom - container.clientHeight / 2;
-                container.scrollTo({ left: scrollX, top: scrollY, behavior: smooth ? "smooth" : "auto" });
-                setUserMessage("Located your post!");
-                setShownConfessionId(myConf.id);
-                clearTimeout(nameTimeoutRef.current);
-                nameTimeoutRef.current = setTimeout(() => {
-                    setShownConfessionId(null);
-                }, 5000);
+                setUserMessage("Preparing download...");
+                
+                setTimeout(() => {
+                    html2canvas(wallInnerRef.current, {
+                        scale: 1,
+                        useCORS: true,
+                        allowTaint: true,
+                        backgroundColor: '#f3f4f6'
+                    }).then(canvas => {
+                        const link = document.createElement('a');
+                        link.download = `${activeCampaign.title.replace(/\s+/g, '_')}_campaign.png`;
+                        link.href = canvas.toDataURL('image/png');
+                        link.click();
+                        setUserMessage("Download completed!");
+                    }).catch(err => {
+                        console.error("Error generating image:", err);
+                        setUserMessage("Failed to generate image. Please try again.");
+                    });
+                }, 500);
             };
 
-            // Zoom controls
-            const zoomIn = () => {
-                const newZoom = Math.min(zoom + 0.1, 1);
-                setZoom(newZoom);
-            };
-            const zoomOut = () => {
-                const newZoom = Math.max(zoom - 0.1, 0.1);
-                setZoom(newZoom);
+            // Time-lapse functionality
+            const toggleTimeLapse = () => {
+                if (timeLapsePlaying) {
+                    // Stop time-lapse
+                    setTimeLapsePlaying(false);
+                    if (timeLapseIntervalRef.current) {
+                        clearInterval(timeLapseIntervalRef.current);
+                        timeLapseIntervalRef.current = null;
+                    }
+                } else {
+                    // Start time-lapse
+                    setTimeLapsePlaying(true);
+                    setTimeLapseProgress(0);
+                    
+                    timeLapseIntervalRef.current = setInterval(() => {
+                        setTimeLapseProgress(prev => {
+                            if (prev >= 100) {
+                                clearInterval(timeLapseIntervalRef.current);
+                                timeLapseIntervalRef.current = null;
+                                setTimeLapsePlaying(false);
+                                return 100;
+                            }
+                            return prev + 1;
+                        });
+                    }, 50);
+                }
             };
 
-            // Start/stop playback for time‑lapse
-            const toggleTimeLapsePlayback = () => {
-                setTimeLapsePlaying(prev => {
-                    const playing = !prev;
-                    if (playing) {
-                        timeLapseIntervalRef.current = setInterval(() => {
-                            setTimeLapseProgress(prev => {
-                                if (prev >= 100) {
-                                    clearInterval(timeLapseIntervalRef.current);
-                                    return prev;
-                                }
-                                return prev + 1;
-                            });
-                        }, 500);
-                    } else {
+            // Admin login
+            const handleAdminLogin = () => {
+                const username = prompt("Enter admin username:");
+                const password = prompt("Enter admin password:");
+                
+                if (username === "wagadugu" && password === "1@2#3$4_Qwer") {
+                    window.location.href = "/admin.html";
+                } else {
+                    setUserMessage("Invalid admin credentials");
+                }
+            };
+
+            // Clean up timeout on unmount
+            React.useEffect(() => {
+                return () => {
+                    if (nameTimeoutRef.current) {
+                        clearTimeout(nameTimeoutRef.current);
+                    }
+                    if (timeLapseIntervalRef.current) {
                         clearInterval(timeLapseIntervalRef.current);
                     }
-                    return playing;
-                });
-            };
-
-            // Stop time‑lapse playback when progress slider changes manually
-            const onTimeLapseSliderChange = (e) => {
-                const value = parseInt(e.target.value);
-                setTimeLapseProgress(value);
-                if (timeLapsePlaying) {
-                    clearInterval(timeLapseIntervalRef.current);
-                    setTimeLapsePlaying(false);
-                }
-            };
-
-            // Upload image
-            const handleImageUpload = (e) => {
-                const file = e.target.files[0];
-                if (file) {
-                    const reader = new FileReader();
-                    reader.onload = (evt) => {
-                        setUploadedImage(evt.target.result);
-                    };
-                    reader.readAsDataURL(file);
-                }
-            };
-
-            // Sign out for the admin
-            const handleAdminSignOut = () => {
-                setIsAdmin(false);
-                localStorage.removeItem('adminToken');
-                window.location.reload();
-            };
+                };
+            }, []);
 
             // Refs
             const wallScrollRef = React.useRef(null);
             const wallInnerRef = React.useRef(null);
 
-            // -------------------------------------------------------------------------
-            // Render
-            //
-            // Compose the UI.  The page includes a left sidebar for creating posts,
-            // a top navigation bar for campaign selection and zoom controls, and the main
-            // board area that displays posts.  The name/edit/like overlay floats
-            // above each post, ensuring it does not occupy board space.
+            // Color palettes
+            const textColors = [
+                '#000000', '#ffffff', '#ff0000', '#00ff00', '#0000ff', '#ffff00', 
+                '#00ffff', '#ff00ff', '#ff9500', '#5856d6', '#007aff', '#34c759'
+            ];
+            
+            const boundaryColors = [
+                '#ffffff', '#000000', '#ff0000', '#00ff00', '#0000ff', '#ffff00', 
+                '#00ffff', '#ff00ff', '#ff9500', '#5856d6', '#007aff', '#34c759'
+            ];
+            
+            const fontFamilies = [
+                'Arial', 'Verdana', 'Georgia', 'Times New Roman', 'Courier New',
+                'Impact', 'Comic Sans MS', 'Trebuchet MS', 'Arial Black', 'Palatino'
+            ];
+
+            // Filter confessions for time-lapse
+            const filteredConfessions = timeLapseMode 
+                ? confessions.filter(conf => {
+                    const created = new Date(conf.created_at).getTime();
+                    const now = new Date().getTime();
+                    const campaignStart = new Date(Math.min(...confessions.map(c => new Date(c.created_at).getTime()))).getTime();
+                    const progressTime = campaignStart + (now - campaignStart) * (timeLapseProgress / 100);
+                    return created <= progressTime;
+                })
+                : confessions;
+
+            // Fallback variables for when there's no campaign
+            const hasCampaign = !!activeCampaign;
+            const campaignTitle = hasCampaign ? activeCampaign.title : 'No Campaign Yet';
+            const campaignType = hasCampaign ? activeCampaign.type : 'text';
+            const campaignDesc = hasCampaign ? activeCampaign.description : '';
+
             return (
-                <div className="min-h-screen flex flex-col">
-                    {/* Top Navigation / Header */}
-                    <div className="bg-white shadow-sm">
-                        <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
-                            <h1 className="text-lg font-semibold text-indigo-600">Enhanced Campaign Wall</h1>
-                            <div className="flex space-x-2 text-sm">
-                                {activeCampaign && (
-                                    <>
-                                        <span className="px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700">
-                                            {activeCampaign.title}
-                                        </span>
-                                        <span className="px-2 py-0.5 rounded-full bg-purple-100 text-purple-700">
-                                            {activeCampaign.type === 'text' ? 'Text Campaign' : 'Image Campaign'}
-                                        </span>
-                                    </>
-                                )}
-                            </div>
-                            <div className="flex items-center space-x-4">
-                                <span className="text-sm text-gray-600">Signed in as: {userNickname}</span>
-                                {isAdmin && (
-                                    <button
-                                        onClick={handleAdminSignOut}
-                                        className="text-sm text-red-600 hover:underline"
+                <div className="min-h-screen w-full bg-gradient-to-br from-blue-50 to-purple-50 text-gray-900">
+                    {/* Header */}
+                    <header className="sticky top-0 z-10 bg-white/80 backdrop-blur-sm border-b border-gray-200 shadow-sm">
+                        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                            <div className="flex justify-between items-center h-16">
+                                <div className="flex items-center">
+                                    <h1 className="text-xl font-bold text-indigo-700">Enhanced Campaign Wall</h1>
+                                    <span className="ml-2 px-2 py-1 bg-indigo-100 text-indigo-700 rounded-full text-xs font-medium">
+                                        {campaignTitle}
+                                    </span>
+                                    <span className="ml-2 px-2 py-1 bg-purple-100 text-purple-700 rounded-full text-xs font-medium">
+                                        {campaignType === 'text' ? 'Text Campaign' : 'Photo Campaign'}
+                                    </span>
+                                </div>
+                                
+                                <div className="flex items-center space-x-4">
+                                    <div className="text-sm text-gray-600">
+                                        Signed in as: <span className="font-medium">{userNickname}</span>
+                                    </div>
+                                    
+                                    <button 
+                                        onClick={handleAdminLogin}
+                                        className="text-sm text-gray-600 hover:text-indigo-700 transition-colors"
                                     >
                                         Admin
                                     </button>
-                                )}
-                                <button
-                                    onClick={() => window.open('https://www.buymeacoffee.com/talkloop', '_blank')}
-                                    className="bg-yellow-400 text-black font-medium py-1 px-3 rounded-full flex items-center text-sm hover:bg-yellow-500"
-                                >
-                                    <i className="fas fa-hand-holding-heart mr-1"></i>
-                                    Donate
-                                </button>
+                                    
+                                    <a 
+                                        href="https://www.paypal.com/donate?business=talkloop" 
+                                        target="_blank"
+                                        className="text-sm bg-yellow-400 hover:bg-yellow-500 text-yellow-900 px-3 py-1.5 rounded-lg transition-colors"
+                                    >
+                                        <i className="fas fa-donate mr-1"></i>
+                                        Donate
+                                    </a>
+                                </div>
                             </div>
                         </div>
-                    </div>
+                    </header>
 
-                    <main className="flex-1 flex overflow-hidden">
-                        {/* Left Sidebar */}
-                        <div className="w-72 border-r border-gray-200 bg-white overflow-y-auto">
-                            <div className="p-4 space-y-6">
-                                {/* Campaign Selection */}
-                                <div>
-                                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                                        Select Campaign
-                                    </label>
-                                    <select
-                                        value={activeCampaign ? activeCampaign.id : ''}
-                                        onChange={(e) => {
-                                            const selected = campaigns.find(c => c.id === e.target.value);
-                                            setActiveCampaign(selected);
-                                        }}
-                                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                                    >
-                                        {campaigns.length === 0 && (
-                                            <option value="" disabled>No active campaigns</option>
-                                        )}
-                                        {campaigns.map(campaign => (
-                                            <option key={campaign.id} value={campaign.id}>
-                                                {campaign.title}
-                                            </option>
-                                        ))}
-                                    </select>
-                                </div>
-
-                                {/* Post Creator */}
-                                <div>
-                                    <h2 className="text-lg font-semibold text-gray-900">Create Your Post</h2>
-                                    <p className="text-sm text-gray-600 mb-2">Your Post (max 200 characters)</p>
-                                    {activeCampaign && activeCampaign.type === 'text' && (
-                                        <textarea
-                                            value={confessionText}
-                                            onChange={(e) => setConfessionText(e.target.value.slice(0, 200))}
-                                            className="w-full h-24 p-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                                            placeholder="Type your post here..."
-                                            disabled={!hasCampaign || userHasPosted}
-                                        />
-                                    )}
-                                    {activeCampaign && activeCampaign.type === 'image' && (
-                                        <div className="mt-2">
-                                            <input
-                                                type="file"
-                                                accept="image/*"
-                                                onChange={handleImageUpload}
-                                                disabled={!hasCampaign || userHasPosted}
-                                                className="w-full"
-                                            />
-                                            {uploadedImage && (
-                                                <div className="mt-2">
-                                                    <img
-                                                        src={uploadedImage}
-                                                        alt="Preview"
-                                                        className="w-full h-32 object-cover border rounded-lg"
-                                                    />
-                                                </div>
+                    <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">  
+                            <div className="lg:col-span-1 space-y-6">  
+                                <div className="bg-white rounded-xl shadow-sm p-5 border border-gray-200">  
+                                    <h2 className="text-lg font-semibold text-gray-900 mb-3">Campaign Selection</h2>  
+                                    
+                                    <div className="mb-4">
+                                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                                            Select Campaign
+                                        </label>
+                                        <select
+                                            value={activeCampaign?.id || ''}
+                                            onChange={e => setActiveCampaign(campaigns.find(c => c.id === e.target.value) || null)}
+                                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                                            disabled={!campaigns.length}
+                                        >
+                                            {!campaigns.length ? (
+                                                <option value="">No campaigns yet</option>
+                                            ) : (
+                                                campaigns.map(campaign => (
+                                                    <option key={campaign.id} value={campaign.id}>
+                                                        {campaign.title}
+                                                    </option>
+                                                ))
                                             )}
-                                        </div>
-                                    )}
-
-                                    {/* Text color, boundary color, font family, font size, rotation controls only for text posts */}
-                                    {activeCampaign && activeCampaign.type === 'text' && (
+                                        </select>
+                                    </div>
+                                    
+                                    {hasCampaign && activeCampaign.type === 'text' ? (
                                         <>
-                                            <div className="mt-3 grid grid-cols-2 gap-3">
+                                            <h2 className="text-lg font-semibold text-gray-900 mb-3">Create Your Post</h2>  
+                                            
+                                            <div className="mb-4">
+                                                <label className="block text-sm font-medium text-gray-700 mb-1">
+                                                    Your Post (max 200 characters)
+                                                </label>
+                                                <textarea
+                                                    value={confessionText}
+                                                    onChange={e => setConfessionText(e.target.value.slice(0, 200))}
+                                                    placeholder="Type your post here..."
+                                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 h-28"
+                                                />
+                                                <div className="flex justify-between text-xs text-gray-500 mt-1">
+                                                    <span>{confessionText.length}/200 characters</span>
+                                                </div>
+                                            </div>
+                                            
+                                            <div className="grid grid-cols-2 gap-4 mb-4">
                                                 <div>
                                                     <label className="block text-sm font-medium text-gray-700 mb-1">Text Color</label>
                                                     <div className="flex flex-wrap gap-1">
-                                                        {['#000000', '#ffffff', '#e11d48', '#10b981', '#3b82f6', '#f97316', '#eab308', '#ec4899'].map(color => (
+                                                        {textColors.map(color => (
                                                             <button
                                                                 key={color}
                                                                 onClick={() => setTextColor(color)}
@@ -854,10 +977,11 @@
                                                         ))}
                                                     </div>
                                                 </div>
+                                                
                                                 <div>
                                                     <label className="block text-sm font-medium text-gray-700 mb-1">Boundary Color</label>
                                                     <div className="flex flex-wrap gap-1">
-                                                        {['#ffffff', '#000000', '#e11d48', '#10b981', '#3b82f6', '#f97316', '#eab308', '#ec4899'].map(color => (
+                                                        {boundaryColors.map(color => (
                                                             <button
                                                                 key={color}
                                                                 onClick={() => setBoundaryColor(color)}
@@ -869,98 +993,187 @@
                                                     </div>
                                                 </div>
                                             </div>
-                                            <div className="mt-3">
-                                                <label className="block text-sm font-medium text-gray-700 mb-1">Font Family</label>
-                                                <select
-                                                    value={fontFamily}
-                                                    onChange={(e) => setFontFamily(e.target.value)}
-                                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                                                >
-                                                    <option value="Arial">Arial</option>
-                                                    <option value="Georgia">Georgia</option>
-                                                    <option value="Times New Roman">Times New Roman</option>
-                                                    <option value="Courier New">Courier New</option>
-                                                    <option value="Comic Sans MS">Comic Sans MS</option>
-                                                </select>
-                                            </div>
-                                            <div className="mt-3 flex items-center">
-                                                <label className="block text-sm font-medium text-gray-700 mb-1 mr-3">Font Size: {fontSize}px</label>
-                                                <input
-                                                    type="range"
-                                                    min="12"
-                                                    max="32"
-                                                    value={fontSize}
-                                                    onChange={(e) => setFontSize(parseInt(e.target.value))}
-                                                    className="flex-1"
-                                                />
+                                            
+                                            <div className="grid grid-cols-2 gap-4 mb-4">
+                                                <div>
+                                                    <label className="block text-sm font-medium text-gray-700 mb-1">Font Family</label>
+                                                    <select
+                                                        value={fontFamily}
+                                                        onChange={e => setFontFamily(e.target.value)}
+                                                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                                                    >
+                                                        {fontFamilies.map(font => (
+                                                            <option key={font} value={font}>{font}</option>
+                                                        ))}
+                                                    </select>
+                                                </div>
+                                                
+                                                <div>
+                                                    <label className="block text-sm font-medium text-gray-700 mb-1">Font Size: {fontSize}px</label>
+                                                    <input
+                                                        type="range"
+                                                        min="12"
+                                                        max="24"
+                                                        value={fontSize}
+                                                        onChange={e => setFontSize(parseInt(e.target.value))}
+                                                        className="w-full"
+                                                    />
+                                                </div>
                                             </div>
                                         </>
-                                    )}
-
-                                    {/* Rotation (common to both text and image posts) */}
-                                    {hasCampaign && (
-                                        <div className="mt-3 flex items-center">
-                                            <label className="block text-sm font-medium text-gray-700 mb-1 mr-3">
-                                                Rotation: {rotation}°
-                                            </label>
-                                            <input
-                                                type="range"
-                                                min="-45"
-                                                max="45"
-                                                step="1"
-                                                value={rotation}
-                                                onChange={(e) => setRotation(parseInt(e.target.value))}
-                                                className="flex-1"
-                                            />
-                                        </div>
-                                    )}
-
-                                    {/* Display name */}
-                                    <div className="mt-3">
-                                        <label className="block text-sm font-medium text-gray-700 mb-1">Display Name</label>
-                                        <input
-                                            type="text"
-                                            value={displayName}
-                                            onChange={(e) => setDisplayName(e.target.value)}
-                                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                                            placeholder="Optional name"
-                                            disabled={!hasCampaign || userHasPosted}
-                                        />
-                                    </div>
-
-                                    {/* Placement Mode */}
-                                    {hasCampaign && (
-                                        <div className="mt-3">
-                                            <label className="block text-sm font-medium text-gray-700 mb-1">Placement</label>
-                                            <div className="flex space-x-2">
-                                                <button
-                                                    onClick={() => setPlacementMode('auto')}
-                                                    className={`flex-1 py-2 rounded-lg text-sm font-medium ${
-                                                        placementMode === 'auto' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                                                    }`}
-                                                    disabled={userHasPosted}
-                                                >
-                                                    Auto
-                                                </button>
-                                                <button
-                                                    onClick={() => setPlacementMode('manual')}
-                                                    className={`flex-1 py-2 rounded-lg text-sm font-medium ${
-                                                        placementMode === 'manual' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                                                    }`}
-                                                    disabled={userHasPosted}
-                                                >
-                                                    Manual
-                                                </button>
+                                    ) : hasCampaign && activeCampaign.type === 'image' ? (
+                                        <>
+                                            <h2 className="text-lg font-semibold text-gray-900 mb-3">Upload Your Photo</h2>  
+                                            
+                                            <div className="mb-4">
+                                                <label className="block text-sm font-medium text-gray-700 mb-1">
+                                                    Select Image
+                                                </label>
+                                                <input
+                                                    type="file"
+                                                    accept="image/*"
+                                                    onChange={handleImageUpload}
+                                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                                                />
                                             </div>
-                                            {placementMode === 'manual' && !userHasPosted && (
-                                                <p className="mt-1 text-xs text-gray-500">Click on the board to pick your spot.</p>
+                                            
+                                            {uploadedImage && (
+                                                <div className="mb-4">
+                                                    <p className="text-sm text-gray-700 mb-1">Image Preview:</p>
+                                                    <img 
+                                                        src={uploadedImage} 
+                                                        alt="Uploaded preview" 
+                                                        className="w-full h-32 object-contain border rounded-lg"
+                                                    />
+                                                </div>
                                             )}
+                                        </>
+                                    ) : (
+                                        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-center">
+                                            <i className="fas fa-info-circle text-blue-500 text-2xl mb-2"></i>
+                                            <p className="text-sm text-blue-700">No active campaign. Go to Admin to create one.</p>
                                         </div>
                                     )}
+                                </div>  
 
-                                    {/* Buttons */}
-                                    <div className="mt-4 space-y-2">
-                                        {hasCampaign && activeCampaign.type === 'text' && (
+                                <div className="bg-white rounded-xl shadow-sm p-5 border border-gray-200">  
+                                    <h2 className="text-lg font-semibold text-gray-900 mb-3">Post Options</h2>  
+                                    
+                                    <div className="space-y-4">  
+                                        <div>  
+                                            <label className="block text-sm font-medium text-gray-700 mb-1">  
+                                                Rotation: <span className="text-indigo-600">{rotation}°</span>  
+                                            </label>  
+                                            <input   
+                                                type="range"   
+                                                min="-45"   
+                                                max="45"   
+                                                value={rotation}   
+                                                onChange={e => setRotation(parseInt(e.target.value))}   
+                                                className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"  
+                                            />  
+                                            <div className="flex justify-between text-xs text-gray-500 mt-1">  
+                                                <span>-45°</span>  
+                                                <span>0°</span>  
+                                                <span>45°</span>  
+                                            </div>  
+                                        </div>  
+                                        
+                                        <div>  
+                                            <label className="block text-sm font-medium text-gray-700 mb-1">  
+                                                Display Name: <span className="text-indigo-600">{userNickname}</span>  
+                                            </label>  
+                                            <input  
+                                                type="text"  
+                                                value={displayName}  
+                                                onChange={e => {
+                                                    setDisplayName(e.target.value.slice(0,20));
+                                                    if (e.target.value.trim()) {
+                                                        localStorage.setItem('userNickname', e.target.value.trim());
+                                                    }
+                                                }}  
+                                                placeholder="Change your display name"  
+                                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"  
+                                            />  
+                                            <div className="flex justify-between text-xs text-gray-500 mt-1">  
+                                                <span>{displayName.length}/20 characters</span>  
+                                            </div>  
+                                        </div>  
+                                        
+                                        {hasCampaign && (
+                                            <div>
+                                                <label className="block text-sm font-medium text-gray-700 mb-1">Placement Mode</label>
+                                                <div className="flex flex-col gap-2">
+                                                    <label className="inline-flex items-center">
+                                                        <input
+                                                            type="radio"
+                                                            value="auto"
+                                                            checked={placementMode === 'auto'}
+                                                            onChange={() => setPlacementMode('auto')}
+                                                            className="mr-2"
+                                                        />
+                                                        Auto Place
+                                                    </label>
+                                                    <label className="inline-flex items-center">
+                                                        <input
+                                                            type="radio"
+                                                            value="manual"
+                                                            checked={placementMode === 'manual'}
+                                                            onChange={() => setPlacementMode('manual')}
+                                                            className="mr-2"
+                                                        />
+                                                        Click to Place
+                                                    </label>
+                                                    {activeCampaign.type === 'text' && (
+                                                        <label className="inline-flex items-center">
+                                                            <input
+                                                                type="radio"
+                                                                value="direct"
+                                                                checked={placementMode === 'direct'}
+                                                                onChange={() => {
+                                                                    if (userHasPosted) {
+                                                                        setUserMessage("You can only post once per campaign");
+                                                                        return;
+                                                                    }
+                                                                    setPlacementMode('direct');
+                                                                }}
+                                                                className="mr-2"
+                                                            />
+                                                            Write Directly on Wall
+                                                        </label>
+                                                    )}
+                                                </div>
+                                                {placementMode === 'manual' && (
+                                                    <p className="text-xs text-gray-500 mt-1">Click on the wall to select a spot for your {activeCampaign.type === 'text' ? 'post' : 'image'}</p>
+                                                )}
+                                                {placementMode === 'direct' && (
+                                                    <p className="text-xs text-gray-500 mt-1">Click on the wall to start typing directly</p>
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>  
+                                </div>  
+
+                                <div className="bg-white rounded-xl shadow-sm p-5 border border-gray-200">  
+                                    <h2 className="text-lg font-semibold text-gray-900 mb-3">Post Your {hasCampaign ? (activeCampaign.type === 'text' ? 'Post' : 'Photo') : 'Content'}</h2>  
+                                    
+                                    <div className="space-y-3">  
+                                        {hasCampaign && userHasPosted ? (  
+                                            <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-3">  
+                                                <p className="text-sm text-blue-700 flex items-center">  
+                                                    <i className="fas fa-check-circle mr-1.5"></i>
+                                                    You've already posted in this campaign  
+                                                </p>  
+                                            </div>  
+                                        ) : hasCampaign ? (  
+                                            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-3">  
+                                                <p className="text-sm text-amber-700">  
+                                                    Your {activeCampaign.type === 'text' ? 'post' : 'photo'} will be permanently added to this wall  
+                                                </p>  
+                                            </div>  
+                                        ) : null}  
+                                        
+                                        {hasCampaign && activeCampaign.type === 'text' && placementMode !== 'direct' && (
                                             <button  
                                                 onClick={handlePlaceConfession}  
                                                 disabled={!hasCampaign || !confessionText.trim() || userHasPosted}  
@@ -977,25 +1190,6 @@
                                                 )}  
                                             </button>  
                                         )}
-
-                                        {/* Image post submission button */}
-                                        {hasCampaign && activeCampaign.type === 'image' && (
-                                            <button
-                                                onClick={handleSubmitImage}
-                                                disabled={!hasCampaign || !uploadedImage || userHasPosted}
-                                                className={`w-full py-3 px-4 rounded-xl font-medium transition-all flex items-center justify-center ${
-                                                    !hasCampaign || !uploadedImage || userHasPosted
-                                                        ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
-                                                        : 'bg-indigo-600 text-white hover:bg-indigo-700'
-                                                }`}
-                                            >
-                                                {userHasPosted ? (
-                                                    'Already Posted'
-                                                ) : (
-                                                    'Post Photo to Wall'
-                                                )}
-                                            </button>
-                                        )}
                                         
                                         <button  
                                             onClick={handleRemoveConfession}  
@@ -1006,7 +1200,7 @@
                                                     : 'bg-gray-100 text-gray-700 hover:bg-gray-200'  
                                             }`}  
                                         >  
-                                            Remove My Post  
+                                            Remove My {hasCampaign ? (activeCampaign.type === 'text' ? 'Post' : 'Photo') : 'Content'}  
                                         </button>  
                                         
                                         <button  
@@ -1018,226 +1212,294 @@
                                                     : 'bg-gray-100 text-gray-700 hover:bg-gray-200'  
                                             }`}  
                                         >  
-                                            Find My Post  
+                                            <i className="fas fa-map-marker-alt mr-1.5"></i>
+                                            Find My {hasCampaign ? (activeCampaign.type === 'text' ? 'Post' : 'Photo') : 'Content'}  
                                         </button>  
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
 
-                        {/* Main Board Area */}
-                        <div className="flex-1 flex flex-col overflow-hidden">
-                            {/* Toolbar */}
-                            <div className="bg-white border-b border-gray-200 py-2 px-4 flex items-center justify-between">
-                                <div className="flex items-center space-x-2">
-                                    <button onClick={zoomOut} className="text-sm px-2 py-1 rounded bg-gray-100 hover:bg-gray-200">
-                                        <i className="fas fa-minus"></i>
-                                    </button>
-                                    <span className="text-sm">{Math.round(zoom * 100)}%</span>
-                                    <button onClick={zoomIn} className="text-sm px-2 py-1 rounded bg-gray-100 hover:bg-gray-200">
-                                        <i className="fas fa-plus"></i>
-                                    </button>
-                                    <span className="text-sm ml-2">{confessions.length} posts</span>
-                                </div>
-                                <div className="flex items-center space-x-2">
-                                    <button
-                                        onClick={toggleTimeLapse}
-                                        disabled={!hasCampaign}
-                                        className={`text-sm px-3 py-1.5 rounded-lg transition-colors ${
-                                            !hasCampaign
-                                                ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                                                : timeLapseMode
-                                                    ? 'bg-indigo-600 text-white'
-                                                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                                        }`}
-                                    >
-                                        <i className="fas fa-film mr-1"></i>
-                                        Time Lapse
-                                    </button>
-                                    {/* View Full Campaign button moved to top toolbar */}
-                                    <button
-                                        onClick={fitToFullContent}
-                                        disabled={!hasCampaign || confessions.length === 0}
-                                        className={`text-sm px-3 py-1.5 rounded-lg transition-colors ${
-                                            !hasCampaign || confessions.length === 0
-                                                ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                                                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                                        }`}
-                                    >
-                                        <i className="fas fa-expand mr-1"></i>
-                                        View Full Campaign
-                                    </button>
-                                </div>  
-                            </div>  
-
-                            {/* Time Lapse Controls (below toolbar, only visible when time‑lapse mode is active but not in modal) */}
-                            {timeLapseMode && hasCampaign && (
-                                <div className="p-3 border-b border-gray-200 bg-gray-50">
-                                    <div className="flex items-center justify-between mb-2">
-                                        <span className="text-sm font-medium text-gray-700">Time Lapse</span>
-                                        <button 
-                                            onClick={toggleTimeLapsePlayback}
-                                            className={`px-2 py-1 text-sm rounded ${
-                                                timeLapsePlaying ? 'bg-red-600 text-white hover:bg-red-700' : 'bg-indigo-600 text-white hover:bg-indigo-700'
-                                            }`}
-                                        >
-                                            {timeLapsePlaying ? 'Stop' : 'Play'}
-                                        </button>
-                                    </div>
-                                    <input
-                                        type="range"
-                                        min="0"
-                                        max="100"
-                                        value={timeLapseProgress}
-                                        onChange={onTimeLapseSliderChange}
-                                        className="w-full"
-                                    />
-                                    <div className="flex justify-between text-xs text-gray-500 mt-1">
-                                        <span>Start</span>
-                                        <span>{timeLapseProgress}%</span>
-                                        <span>Now</span>
-                                    </div>
-                                </div>
-                            )}
-
-                            {/* Wall container */}
-                            <div
-                                className="relative flex-1 overflow-auto bg-gray-200"
-                                ref={wallScrollRef}
-                                onClick={hasCampaign ? (placementMode === 'direct' ? null : onWallClick) : undefined}
-                            >
-                                {/* Manual placement marker */}
-                                {placementMode === 'manual' && pendingManualSpot && (
-                                    <div
-                                        className="absolute z-40 pointer-events-none"
-                                        style={{
-                                            left: (pendingManualSpot.x * zoom) - 5,
-                                            top: (pendingManualSpot.y * zoom) - 5,
-                                            width: 10,
-                                            height: 10,
-                                            backgroundColor: '#f97316',
-                                            borderRadius: '50%',
-                                            transform: 'translate(-50%, -50%)',
-                                            pointerEvents: 'none'
-                                        }}
-                                    />
-                                )}
-                                {/* Inner wall */}
-                                <div
-                                    ref={wallInnerRef}
-                                    className="relative"
-                                    style={{
-                                        width: `${WALL_WIDTH}px`,
-                                        height: `${WALL_HEIGHT}px`,
-                                        transform: `scale(${zoom})`,
-                                        transformOrigin: 'top left'
-                                    }}
-                                >
-                                    {/* Confessions */}
-                                    {hasCampaign && filteredConfessions.map((conf) => (  
-                                        <div   
-                                            key={conf.id}   
-                                            data-conf-id={conf.id}  
-                                            className={`absolute select-none transition-transform duration-200 hover:z-50 hover:scale-105 group ${conf.likes === highestLikes && conf.likes > 0 ? 'animate-bounce' : ''}`}  
-                                            style={{   
-                                                left: `${conf.x}px`,   
-                                                top: `${conf.y}px`,   
-                                                width: `${conf.w}px`,   
-                                                height: `${conf.h}px`,  
-                                                transform: `rotate(${conf.rot * 180 / Math.PI}deg)`,  
-                                                transformOrigin: 'center'
-                                            }}  
-                                            onClick={() => {
-                                                if (placementMode !== 'manual') {
-                                                    setShownConfessionId(prev => prev === conf.id ? null : conf.id);
-                                                    clearTimeout(nameTimeoutRef.current);
-                                                    nameTimeoutRef.current = setTimeout(() => {
-                                                        setShownConfessionId(null);
-                                                    }, 5000);
-                                                }
-                                            }}  
+                                        <button  
+                                            onClick={shareCampaign}  
+                                            className="w-full py-2 px-4 bg-blue-100 text-blue-700 rounded-xl hover:bg-blue-200 transition-colors flex items-center justify-center"  
                                         >  
-                                            {/* Overlay containing name, like and edit controls.  It floats above the post and does not consume space. */}
-                                            <div
-                                                className={`absolute top-1 left-1 right-1 flex items-center space-x-1 text-white text-xs z-50 pointer-events-auto ${shownConfessionId === conf.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'} transition-opacity duration-200`}
-                                                onClick={(e) => e.stopPropagation()}
-                                            >
-                                                <span className="bg-gray-900/80 px-1 rounded">
-                                                    {conf.name}
-                                                </span>
-                                                {/* Like button */}
-                                                <button
-                                                    onClick={(e) => {
-                                                        e.stopPropagation();
-                                                        handleLikeConfession(conf.id);
-                                                    }}
-                                                    className="flex items-center bg-pink-600 hover:bg-pink-700 px-1 py-0.5 rounded"
-                                                >
-                                                    <i className={`${(conf.liked_by || []).includes(userId) ? 'fas' : 'far'} fa-heart`}></i>
-                                                    <span className="ml-1">{conf.likes || 0}</span>
-                                                </button>
-                                                {/* Edit button for owner */}
-                                                {conf.owner === userId && (
-                                                    <button
-                                                        onClick={(e) => {
-                                                            e.stopPropagation();
-                                                            handleEditConfession(conf.id);
-                                                        }}
-                                                        className="flex items-center bg-indigo-600 hover:bg-indigo-700 px-1 py-0.5 rounded"
-                                                    >
-                                                        <i className="fas fa-pen"></i>
-                                                    </button>
-                                                )}
-                                            </div>
-                                            
-                                            {conf.type === 'text' ? (
-                                                <div
-                                                    className="w-full h-full flex items-center justify-center text-center p-3"
-                                                    style={{
-                                                        color: conf.color || '#000000',
-                                                        fontFamily: conf.font_family || 'Arial',
-                                                        fontSize: `${conf.font_size || 14}px`,
-                                                        overflow: 'hidden',
-                                                        wordBreak: 'break-word',
-                                                        textShadow: `
-                                                            1px 1px 0 ${conf.boundary_color || '#ffffff'}, 
-                                                            -1px -1px 0 ${conf.boundary_color || '#ffffff'}, 
-                                                            1px -1px 0 ${conf.boundary_color || '#ffffff'}, 
-                                                            -1px 1px 0 ${conf.boundary_color || '#ffffff'},
-                                                            0px 1px 0 ${conf.boundary_color || '#ffffff'}, 
-                                                            1px 0px 0 ${conf.boundary_color || '#ffffff'}, 
-                                                            -1px 0px 0 ${conf.boundary_color || '#ffffff'}, 
-                                                            0px -1px 0 ${conf.boundary_color || '#ffffff'}
-                                                        `
-                                                    }}
-                                                >
-                                                    {conf.text}
-                                                </div>
-                                            ) : (
-                                                <img
-                                                    src={conf.image}
-                                                    alt="User submission"
-                                                    className="w-full h-full object-cover"
-                                                    style={{
-                                                        border: '1px solid #e5e7eb',
-                                                        borderRadius: '4px'
-                                                    }}
-                                                />
-                                            )}
+                                            <i className="fas fa-share-alt mr-1.5"></i>
+                                            Share Campaign  
+                                        </button>  
+
+                                        <button  
+                                            onClick={downloadCampaign}  
+                                            disabled={!hasCampaign}
+                                            className={`w-full py-2 px-4 rounded-xl font-medium transition-all flex items-center justify-center ${  
+                                                !hasCampaign
+                                                    ? 'bg-gray-100 text-gray-400 cursor-not-allowed'  
+                                                    : 'bg-green-100 text-green-700 hover:bg-green-200'  
+                                            }`}  
+                                        >  
+                                            <i className="fas fa-download mr-1.5"></i>
+                                            Download Campaign  
+                                        </button>  
+                                    </div>  
+                                    
+                                    {userMessage && (  
+                                        <div className={`mt-4 p-3 rounded-lg text-sm ${  
+                                            userMessage.toLowerCase().includes('fail') || userMessage.toLowerCase().includes('error') || userMessage.toLowerCase().includes('filled')  
+                                                ? 'bg-red-50 text-red-700 border border-red-200'   
+                                                : 'bg-green-50 text-green-700 border border-green-200'  
+                                        }`}>  
+                                            {userMessage}  
                                         </div>  
-                                    ))}  
+                                    )}  
                                 </div>  
                             </div>  
-                            
-                            {/* About / Info Section */}
-                            <div className="p-4 bg-white border-t border-gray-200">
-                                {hasCampaign && (
-                                    <div className="mt-4 text-sm text-gray-600">  
-                                        <p>✨ Each {activeCampaign.type === 'text' ? 'post' : 'photo'} is styled uniquely, creating a beautiful mosaic of shared experiences.</p>  
-                                        <p className="mt-1">🖱️ Scroll to explore, zoom in/out, and click on items to see who posted them.</p>  
+
+                            <div className="lg:col-span-2">  
+                                <div className="bg-white rounded-xl shadow-sm p-5 border border-gray-200 mb-5">  
+                                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-4">  
+                                        <div>
+                                            <h2 className="text-xl font-bold text-gray-900">  
+                                                "{campaignTitle}"  
+                                            </h2>  
+                                            {campaignDesc && (
+                                                <p className="text-sm text-gray-600 mt-1">{campaignDesc}</p>
+                                            )}
+                                        </div>
+                                        
+                                        <div className="flex items-center space-x-3 mt-2 sm:mt-0">  
+                                            <div className="flex items-center bg-gray-100 rounded-lg px-3 py-1.5">  
+                                                <button   
+                                                    onClick={() => setZoom(z => Math.max(0.1, z - 0.1))}
+                                                    className="text-gray-600 hover:text-indigo-700 p-1"  
+                                                    aria-label="Zoom out"  
+                                                >  
+                                                    <i className="fas fa-minus"></i>
+                                                </button>  
+                                                
+                                                <span className="mx-2 text-sm font-medium text-gray-700 min-w-[3rem] text-center">  
+                                                    {Math.round(zoom * 100)}%  
+                                                </span>  
+                                                
+                                                <button   
+                                                    onClick={() => setZoom(z => Math.min(3, z + 0.1))}
+                                                    className="text-gray-600 hover:text-indigo-700 p-1"  
+                                                    aria-label="Zoom in"  
+                                                >  
+                                                    <i className="fas fa-plus"></i>
+                                                </button>  
+                                            </div>  
+                                            
+                                            <div className="text-sm text-gray-500 bg-gray-100 rounded-lg px-3 py-1.5">  
+                                                {filteredConfessions.length} {hasCampaign ? (activeCampaign.type === 'text' ? 'posts' : 'photos') : 'items'}  
+                                            </div>  
+
+                                            <button
+                                                onClick={() => setTimeLapseMode(!timeLapseMode)}
+                                                disabled={!hasCampaign}
+                                                className={`text-sm px-3 py-1.5 rounded-lg transition-colors ${
+                                                    !hasCampaign
+                                                        ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                                                        : timeLapseMode 
+                                                            ? 'bg-indigo-600 text-white' 
+                                                            : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                                                }`}
+                                            >
+                                                <i className="fas fa-film mr-1"></i>
+                                                Time Lapse
+                                            </button>
+                                        </div>  
                                     </div>  
-                                )}
-                            </div>
+
+                                    {timeLapseMode && hasCampaign && (
+                                        <div className="mb-4 bg-gray-100 p-3 rounded-lg">
+                                            <div className="flex items-center justify-between mb-2">
+                                                <span className="text-sm font-medium text-gray-700">Time Lapse</span>
+                                                <button 
+                                                    onClick={toggleTimeLapse}
+                                                    className="px-2 py-1 bg-indigo-600 text-white text-sm rounded"
+                                                >
+                                                    {timeLapsePlaying ? 'Stop' : 'Play'}
+                                                </button>
+                                            </div>
+                                            <input
+                                                type="range"
+                                                min="0"
+                                                max="100"
+                                                value={timeLapseProgress}
+                                                onChange={e => setTimeLapseProgress(parseInt(e.target.value))}
+                                                className="w-full"
+                                            />
+                                            <div className="flex justify-between text-xs text-gray-500 mt-1">
+                                                <span>Start</span>
+                                                <span>{timeLapseProgress}%</span>
+                                                <span>Now</span>
+                                            </div>
+                                        </div>
+                                    )}
+                                    
+                                    <div className="relative bg-gray-100 rounded-lg overflow-hidden border border-gray-300">  
+                                        <div   
+                                            ref={wallScrollRef}  
+                                            className="h-[60vh] overflow-auto relative"  
+                                            onClick={hasCampaign ? (placementMode === 'direct' ? handleWallClickForWriting : onWallClick) : undefined}
+                                        >  
+                                            <div
+                                                ref={wallInnerRef}  
+                                                className="relative mx-auto my-6 min-w-full min-h-full"
+                                                style={{  
+                                                    width: `${WALL_WIDTH}px`,  
+                                                    height: `${WALL_HEIGHT}px`,  
+                                                    backgroundSize: '24px 24px',  
+                                                    backgroundImage: 'radial-gradient(#d4d4d8 1px, transparent 1px)',  
+                                                    backgroundRepeat: 'repeat',
+                                                    transform: `scale(${zoom})`,  
+                                                    transformOrigin: 'center center'
+                                                }}  
+                                            >  
+                                                {hasCampaign && placementMode === 'manual' && pendingManualSpot && activeCampaign.type === 'text' && (
+                                                    <div 
+                                                        className="absolute pointer-events-none"
+                                                        style={{ 
+                                                            left: pendingManualSpot.x - 8, 
+                                                            top: pendingManualSpot.y - 8, 
+                                                            width: 16, 
+                                                            height: 16,
+                                                            borderRadius: '50%', 
+                                                            border: '2px solid #3b82f6', 
+                                                            boxShadow: '0 0 0 4px rgba(59,130,246,0.2)',
+                                                            zIndex: 1000
+                                                        }} 
+                                                    />
+                                                )}
+                                                
+                                                {hasCampaign && isWritingDirectly && directWritingPosition && (
+                                                    <div 
+                                                        className="absolute bg-white border-2 border-indigo-400 rounded-lg p-2 shadow-lg z-50"
+                                                        style={{ 
+                                                            left: directWritingPosition.x, 
+                                                            top: directWritingPosition.y,
+                                                            minWidth: '200px'
+                                                        }}
+                                                    >
+                                                        <textarea
+                                                            autoFocus
+                                                            value={directWritingText}
+                                                            onChange={e => setDirectWritingText(e.target.value)}
+                                                            placeholder="Type directly on the wall..."
+                                                            className="w-full p-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                                            rows={3}
+                                                            onBlur={handlePlaceDirectWriting}
+                                                            onKeyDown={e => {
+                                                                if (e.key === 'Enter' && e.ctrlKey) {
+                                                                    handlePlaceDirectWriting();
+                                                                }
+                                                            }}
+                                                        />
+                                                        <div className="flex justify-between items-center mt-2">
+                                                            <span className="text-xs text-gray-500">Press Ctrl+Enter to post</span>
+                                                            <button
+                                                                onClick={handlePlaceDirectWriting}
+                                                                className="px-3 py-1 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700"
+                                                            >
+                                                                Post
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                )}
+                                                
+                                                {filteredConfessions.map((conf) => (  
+                                                    <div   
+                                                        key={conf.id}   
+                                                        data-conf-id={conf.id}  
+                                                        className="absolute select-none transition-transform duration-200 hover:z-50 hover:scale-105 group"  
+                                                        style={{   
+                                                            left: `${conf.x}px`,   
+                                                            top: `${conf.y}px`,   
+                                                            width: `${conf.w}px`,   
+                                                            height: `${conf.h}px`,  
+                                                            transform: `rotate(${conf.rot * 180 / Math.PI}deg)`,  
+                                                            transformOrigin: 'center'
+                                                        }}  
+                                                        onClick={() => handleConfessionClick(conf.id)}  
+                                                    >  
+                                                        <div className={`absolute -top-8 left-1/2 -translate-x-1/2 text-xs px-2 py-1 rounded bg-gray-900 text-white whitespace-nowrap transition-opacity duration-200 ${  
+                                                            shownConfessionId === conf.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'  
+                                                        } z-50`}>  
+                                                            {conf.name}  
+                                                        </div>  
+                                                        
+                                                        {conf.type === 'text' ? (
+                                                            <div
+                                                                className="w-full h-full flex items-center justify-center text-center p-3"
+                                                                style={{
+                                                                    color: conf.color || '#000000',
+                                                                    fontFamily: conf.font_family || 'Arial',
+                                                                    fontSize: `${conf.font_size || 14}px`,
+                                                                    overflow: 'hidden',
+                                                                    wordBreak: 'break-word',
+                                                                    textShadow: `
+                                                                        1px 1px 0 ${conf.boundary_color || '#ffffff'}, 
+                                                                        -1px -1px 0 ${conf.boundary_color || '#ffffff'}, 
+                                                                        1px -1px 0 ${conf.boundary_color || '#ffffff'}, 
+                                                                        -1px 1px 0 ${conf.boundary_color || '#ffffff'},
+                                                                        0px 1px 0 ${conf.boundary_color || '#ffffff'}, 
+                                                                        1px 0px 0 ${conf.boundary_color || '#ffffff'}, 
+                                                                        -1px 0px 0 ${conf.boundary_color || '#ffffff'}, 
+                                                                        0px -1px 0 ${conf.boundary_color || '#ffffff'}
+                                                                    `
+                                                                }}
+                                                            >
+                                                                {conf.text}
+                                                            </div>
+                                                        ) : (
+                                                            <img 
+                                                                src={conf.image} 
+                                                                alt="User submission"
+                                                                className="w-full h-full object-cover"
+                                                                style={{
+                                                                    border: '2px solid #e5e7eb',
+                                                                    borderRadius: '8px'
+                                                                }}
+                                                            />
+                                                        )}
+
+                                                        {conf.owner === userId && (
+                                                            <button
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    handleEditConfession(conf.id);
+                                                                }}
+                                                                className="absolute -bottom-8 left-1/2 -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity bg-indigo-600 text-white px-2 py-1 rounded text-xs"
+                                                            >
+                                                                Edit
+                                                            </button>
+                                                        )}
+                                                    </div>  
+                                                ))}  
+                                            </div>  
+                                        </div>  
+                                    </div>  
+                                    
+                                    {hasCampaign && (
+                                        <div className="mt-4 text-sm text-gray-600">  
+                                            <p>✨ Each {activeCampaign.type === 'text' ? 'post' : 'photo'} is styled uniquely, creating a beautiful mosaic of shared experiences.</p>  
+                                            <p className="mt-1">🖱️ Scroll to explore, zoom in/out, and click on items to see who posted them.</p>  
+                                        </div>  
+                                    )}
+                                </div>  
+                                
+                                <div className="bg-white rounded-xl shadow-sm p-5 border border-gray-200">  
+                                    <h3 className="font-semibold text-gray-900 mb-2">About This Campaign</h3>  
+                                    <p className="text-sm text-gray-600">  
+                                        {hasCampaign ? (campaignDesc || "This campaign brings together community contributions to form a visual tapestry of shared experiences. Each item is a unique contribution to the collective story.") : "No active campaign. Go to Admin to create a campaign."}  
+                                    </p>  
+                                    
+                                    {hasCampaign && (
+                                        <div className="mt-4 flex flex-wrap gap-2">  
+                                            <button onClick={fitToFullContent} className="text-xs bg-gray-100 hover:bg-gray-200 text-gray-700 px-3 py-1.5 rounded-lg transition-colors">  
+                                                <i className="fas fa-expand mr-1"></i>
+                                                View Full Campaign  
+                                            </button>  
+                                        </div>  
+                                    )}
+                                </div>  
+                            </div>  
                         </div>  
                     </main>
 
@@ -1251,7 +1513,7 @@
                                     <div>
                                         <label className="block text-sm font-medium text-gray-700 mb-1">Text Color</label>
                                         <div className="flex flex-wrap gap-1">
-                                            {['#000000', '#ffffff', '#e11d48', '#10b981', '#3b82f6', '#f97316', '#eab308', '#ec4899'].map(color => (
+                                            {textColors.map(color => (
                                                 <button
                                                     key={color}
                                                     onClick={() => setEditTextColor(color)}
@@ -1262,10 +1524,11 @@
                                             ))}
                                         </div>
                                     </div>
+                                    
                                     <div>
                                         <label className="block text-sm font-medium text-gray-700 mb-1">Boundary Color</label>
                                         <div className="flex flex-wrap gap-1">
-                                            {['#ffffff', '#000000', '#e11d48', '#10b981', '#3b82f6', '#f97316', '#eab308', '#ec4899'].map(color => (
+                                            {boundaryColors.map(color => (
                                                 <button
                                                     key={color}
                                                     onClick={() => setEditBoundaryColor(color)}
@@ -1277,172 +1540,115 @@
                                         </div>
                                     </div>
                                 </div>
-                                <div className="mb-4">
-                                    <label className="block text-sm font-medium text-gray-700 mb-1">Font Family</label>
-                                    <select
-                                        value={editFontFamily}
-                                        onChange={(e) => setEditFontFamily(e.target.value)}
-                                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                                    >
-                                        <option value="Arial">Arial</option>
-                                        <option value="Georgia">Georgia</option>
-                                        <option value="Times New Roman">Times New Roman</option>
-                                        <option value="Courier New">Courier New</option>
-                                        <option value="Comic Sans MS">Comic Sans MS</option>
-                                    </select>
+                                
+                                <div className="grid grid-cols-2 gap-4 mb-4">
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-1">Font Family</label>
+                                        <select
+                                            value={editFontFamily}
+                                            onChange={e => setEditFontFamily(e.target.value)}
+                                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                                        >
+                                            {fontFamilies.map(font => (
+                                                <option key={font} value={font}>{font}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                    
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-1">Font Size: {editFontSize}px</label>
+                                        <input
+                                            type="range"
+                                            min="12"
+                                            max="24"
+                                            value={editFontSize}
+                                            onChange={e => setEditFontSize(parseInt(e.target.value))}
+                                            className="w-full"
+                                        />
+                                    </div>
                                 </div>
-                                <div className="mb-4">
-                                    <label className="block text-sm font-medium text-gray-700 mb-1">Font Size: {editFontSize}px</label>
-                                    <input
-                                        type="range"
-                                        min="12"
-                                        max="32"
-                                        value={editFontSize}
-                                        onChange={(e) => setEditFontSize(parseInt(e.target.value))}
-                                        className="w-full"
-                                    />
+
+                                <div className="mb-4">  
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">  
+                                        Rotation: <span className="text-indigo-600">{editRotation}°</span>  
+                                    </label>  
+                                    <input   
+                                        type="range"   
+                                        min="-45"   
+                                        max="45"   
+                                        value={editRotation}   
+                                        onChange={e => setEditRotation(parseInt(e.target.value))}   
+                                        className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"  
+                                    />  
+                                    <div className="flex justify-between text-xs text-gray-500 mt-1">  
+                                        <span>-45°</span>  
+                                        <span>0°</span>  
+                                        <span>45°</span>  
+                                    </div>  
                                 </div>
-                                <div className="mb-4">
-                                    <label className="block text-sm font-medium text-gray-700 mb-1">Rotation: {editRotation}°</label>
-                                    <input
-                                        type="range"
-                                        min="-45"
-                                        max="45"
-                                        value={editRotation}
-                                        onChange={(e) => setEditRotation(parseInt(e.target.value))}
-                                        className="w-full"
-                                    />
-                                </div>
-                                <div className="flex justify-end space-x-2">
+                                
+                                <div className="flex justify-end space-x-3">
                                     <button
                                         onClick={() => setEditingPostId(null)}
-                                        className="px-4 py-2 text-sm bg-gray-200 text-gray-700 rounded hover:bg-gray-300"
+                                        className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"
                                     >
                                         Cancel
                                     </button>
                                     <button
                                         onClick={handleSaveEdit}
-                                        className="px-4 py-2 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-700"
+                                        className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
                                     >
-                                        Save
+                                        Save Changes
                                     </button>
                                 </div>
                             </div>
                         </div>
                     )}
 
-                    {/* Time Lapse Modal */}
-                    {timeLapseMode && showTimeLapseModal && hasCampaign && (
-                        <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-40">
-                            <div className="bg-white rounded-xl shadow-xl p-4 w-11/12 max-w-5xl max-h-[90vh] flex flex-col">
-                                <div className="flex justify-between items-center mb-3">
-                                    <h3 className="text-lg font-semibold text-gray-900">Campaign Time Lapse</h3>
-                                    <button
-                                        onClick={() => {
-                                            setTimeLapseMode(false);
-                                            setShowTimeLapseModal(false);
-                                            setTimeLapsePlaying(false);
-                                        }}
-                                        className="text-gray-500 hover:text-gray-700"
-                                    >
-                                        <i className="fas fa-times"></i>
-                                    </button>
-                                </div>
-                                <div className="flex-1 overflow-auto bg-gray-100 border border-gray-200 rounded relative">
-                                    <div
-                                        className="relative"
-                                        style={{
-                                            width: `${WALL_WIDTH}px`,
-                                            height: `${WALL_HEIGHT}px`,
-                                            transform: 'scale(0.12)',
-                                            transformOrigin: 'top left'
-                                        }}
-                                    >
-                                        {filteredConfessions.map((conf) => (
-                                            <div
-                                                key={conf.id}
-                                                className={`absolute select-none ${conf.likes === highestLikes && conf.likes > 0 ? 'animate-bounce' : ''}`}
-                                                style={{
-                                                    left: `${conf.x}px`,
-                                                    top: `${conf.y}px`,
-                                                    width: `${conf.w}px`,
-                                                    height: `${conf.h}px`,
-                                                    transform: `rotate(${conf.rot * 180 / Math.PI}deg)`,
-                                                    transformOrigin: 'center'
-                                                }}
-                                            >
-                                                {conf.type === 'text' ? (
-                                                    <div
-                                                        className="w-full h-full flex items-center justify-center text-center p-1"
-                                                        style={{
-                                                            color: conf.color || '#000000',
-                                                            fontFamily: conf.font_family || 'Arial',
-                                                            fontSize: `${conf.font_size || 14}px`,
-                                                            overflow: 'hidden',
-                                                            wordBreak: 'break-word',
-                                                            textShadow: `
-                                                                1px 1px 0 ${conf.boundary_color || '#ffffff'}, 
-                                                                -1px -1px 0 ${conf.boundary_color || '#ffffff'}, 
-                                                                1px -1px 0 ${conf.boundary_color || '#ffffff'}, 
-                                                                -1px 1px 0 ${conf.boundary_color || '#ffffff'},
-                                                                0px 1px 0 ${conf.boundary_color || '#ffffff'}, 
-                                                                1px 0px 0 ${conf.boundary_color || '#ffffff'}, 
-                                                                -1px 0px 0 ${conf.boundary_color || '#ffffff'}, 
-                                                                0px -1px 0 ${conf.boundary_color || '#ffffff'}
-                                                            `
-                                                        }}
-                                                    >
-                                                        {conf.text}
-                                                    </div>
-                                                ) : (
-                                                    <img
-                                                        src={conf.image}
-                                                        alt="User submission"
-                                                        className="w-full h-full object-cover"
-                                                        style={{
-                                                            border: '1px solid #e5e7eb',
-                                                            borderRadius: '4px'
-                                                        }}
-                                                    />
-                                                )}
-                                            </div>
-                                        ))}
-                                    </div>
-                                </div>
-                                <div className="mt-4">
-                                    <div className="flex items-center justify-between mb-1">
-                                        <span className="text-sm font-medium text-gray-700">Playback</span>
-                                        <button 
-                                            onClick={toggleTimeLapsePlayback}
-                                            className={`px-2 py-1 text-sm rounded ${
-                                                timeLapsePlaying ? 'bg-red-600 text-white hover:bg-red-700' : 'bg-indigo-600 text-white hover:bg-indigo-700'
-                                            }`}
-                                        >
-                                            {timeLapsePlaying ? 'Stop' : 'Play'}
-                                        </button>
-                                    </div>
-                                    <input
-                                        type="range"
-                                        min="0"
-                                        max="100"
-                                        value={timeLapseProgress}
-                                        onChange={onTimeLapseSliderChange}
-                                        className="w-full"
-                                    />
-                                    <div className="flex justify-between text-xs text-gray-500 mt-1">
-                                        <span>Start</span>
-                                        <span>{timeLapseProgress}%</span>
-                                        <span>Now</span>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    )}
+                    <style>{`
+                        [data-flash="1"] {
+                            animation: flash 1.5s ease-in-out;
+                        }
+                        @keyframes flash {
+                            0% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.7); }
+                            50% { box-shadow: 0 0 0 10px rgba(34, 197, 94, 0); }
+                            100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
+                        }
+                        input[type="range"] {
+                            -webkit-appearance: none;
+                            height: 6px;
+                            background: #e5e7eb;
+                            border-radius: 3px;
+                            outline: none;
+                        }
+                        input[type="range"]::-webkit-slider-thumb {
+                            -webkit-appearance: none;
+                            appearance: none;
+                            width: 18px;
+                            height: 18px;
+                            border-radius: 50%;
+                            background: #4f46e5;
+                            cursor: pointer;
+                            border: 2px solid white;
+                            box-shadow: 0 0 0 1px #e5e7eb, 0 2px 4px rgba(0,0,0,0.1);
+                        }
+                        input[type="range"]::-moz-range-thumb {
+                            width: 18px;
+                            height: 18px;
+                            border-radius: 50%;
+                            background: #4f46e5;
+                            cursor: pointer;
+                            border: 2px solid white;
+                            box-shadow: 0 0 0 1px #e5e7eb, 0 2px 4px rgba(0,0,0,0.1);
+                        }
+                    `}</style>
                 </div>
             );
         }
 
-        ReactDOM.render(<EnhancedCampaignBoard />, document.getElementById('root'));
+        // Render the app
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<EnhancedCampaignBoard />);
     </script>
 </body>
 </html>
